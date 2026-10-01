@@ -101,9 +101,6 @@ def parse_request(p: dict) -> tuple[dict, int]:
     price = p.get('start_price')
     if price is not None and (_num(price) is None):
         raise ValueError('start_price: ожидается неотрицательное число')
-    platform = p.get('platform', 'EM')
-    if platform not in ('EM', 'AISGZ'):
-        raise ValueError('platform: EM (Электронный магазин) или AISGZ (АИС ГЗ)')
     inn, kpp = p.get('customer_inn'), p.get('customer_kpp')
     if inn not in (None, '') and _digits(inn, (10,)) != str(inn):
         raise ValueError('customer_inn: 10 цифр')
@@ -112,8 +109,10 @@ def parse_request(p: dict) -> tuple[dict, int]:
     top_k = p.get('top_k', 10)
     if type(top_k) is not int or not 1 <= top_k <= 50:
         raise ValueError('top_k: целое число от 1 до 50')
-    return {'subject': subject, 'items': clean_items, 'start_price': _num(price) if price is not None else None,
-            'is_smp': bool(p.get('is_smp', False)), 'platform': platform,
+    price = _num(price) if price is not None else None
+    # Площадки нет в контракте — модели она нужна как признак, угадываем по НМЦК (по умолчанию ЭМ).
+    return {'subject': subject, 'items': clean_items, 'start_price': price,
+            'is_smp': bool(p.get('is_smp', False)), 'platform': _platform({}, price),
             'customer_inn': inn or None, 'customer_kpp': kpp or None}, top_k
 
 
@@ -139,7 +138,7 @@ def recommend_detailed(payload: dict) -> dict:
         'model_version': f"lgbm-lambdarank-{rec.meta['test_months'][-1]}-it{rec.meta['best_iteration']}",
         'took_ms': int((time.time() - t0) * 1000),
         'candidates_considered': n_cands,
-        'lot': {'platform': lot['platform'], 'customer_known': bool(out['batch'].ctx.cid.iloc[0] >= 0),
+        'lot': {'customer_known': bool(out['batch'].ctx.cid.iloc[0] >= 0),
                 'okpd2_recognized': int(len(out['batch'].keys))},
         'warnings': out['warnings'],
         'items': items,

@@ -38,7 +38,6 @@ python server.py                     # http://127.0.0.1:8000
   "items": [{"name": "Крупа гречневая ядрица", "okpd2": "10.61.32.113"}],
   "start_price": 250000,
   "is_smp": false,
-  "platform": "EM",
   "customer_inn": "7802141070",
   "customer_kpp": "780201001",
   "top_k": 10
@@ -51,7 +50,6 @@ python server.py                     # http://127.0.0.1:8000
 | `items` | нет | позиции ТРУ: `name`, `okpd2` (формат `XX.XX.XX.XXX`, можно короче) |
 | `start_price` | нет | НМЦК, ₽ |
 | `is_smp` | нет | закупка только у МСП, по умолчанию `false` |
-| `platform` | нет | `EM` — Электронный магазин (по умолчанию), `AISGZ` — АИС ГЗ |
 | `customer_inn`, `customer_kpp` | нет | заказчик: 10 и 9 цифр |
 | `top_k` | нет | 1–50, по умолчанию 10 |
 
@@ -62,7 +60,7 @@ python server.py                     # http://127.0.0.1:8000
   "model_version": "lgbm-lambdarank-2025-12-it499",
   "took_ms": 1840,
   "candidates_considered": 229,
-  "lot": {"platform": "EM", "customer_known": true, "okpd2_recognized": 7},
+  "lot": {"customer_known": true, "okpd2_recognized": 7},
   "warnings": [],
   "items": [
     {
