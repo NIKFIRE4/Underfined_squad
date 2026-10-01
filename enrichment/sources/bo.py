@@ -24,14 +24,15 @@ LINES = {
 }
 
 
-async def find_id(http: Http, inn: str) -> str | None:
+async def find_org(http: Http, inn: str) -> dict | None:
+    """Строка поиска ГИР БО: id карточки, ОКВЭД, краткое имя (ОКВЭД — бесплатно, без доп. запроса)."""
     r = await http.request(
         SOURCE, "GET", f"{BASE}/advanced-search/organizations/search",
         params={"query": inn, "page": 0}, headers=HEADERS,
     )
     for row in r.json().get("content", []):
         if re.sub(r"<[^>]+>", "", row.get("inn") or "") == inn:
-            return str(row["id"])
+            return row
     return None
 
 
@@ -46,8 +47,16 @@ def _year_values(correction: dict) -> dict:
 
 async def fetch(http: Http, inn: str, bo_id: str | None = None) -> SourceResult:
     res = SourceResult(SOURCE, inn)
-    bo_id = bo_id or await find_id(http, inn)
+    if not bo_id:
+        org = await find_org(http, inn)
+        ts = now_utc()
+        if org:
+            bo_id = str(org["id"])
+            okved = org.get("okved2")
+            res.add("okved_main", okved.get("id") if isinstance(okved, dict) else okved, ts)
+            res.add("name_short", org.get("shortName"), ts)
     ts = now_utc()
+    res.add("bo_id", bo_id, ts)
     if not bo_id:
         res.add("bfo_found", False, ts)
         return res

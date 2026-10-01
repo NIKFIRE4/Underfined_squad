@@ -41,10 +41,11 @@ SOURCE_LABELS = {
     "fns_paytax": "Уплаченные налоги (открытые данные ФНС)", "fns_debtam": "Недоимки (открытые данные ФНС)",
     "fns_taxoffence": "Налоговые правонарушения (открытые данные ФНС)",
     "reg_gisp": "Реестр промышленной продукции (ПП 719)", "reg_software": "Реестр российского ПО",
+    "history": "История закупок АИС ГЗ и ЭМ (выгрузка организаторов)",
 }
 # поля, которые показываем в sources: то, на чём основаны фильтры, роль, статус и причины
 SOURCE_FIELDS = ("status", "reg_date", "okved_main", "is_smp", "smp_category", "revenue", "employees",
-                 "in_rnp", "in_gisp", "in_software_registry", "tax_arrears_total")
+                 "in_rnp", "in_gisp", "in_software_registry", "tax_arrears_total", "hist_okpd2_codes")
 ROLE_LABELS = {"manufacturer": "Производитель", "distributor": "Дистрибьютор",
                "supplier": "Поставщик-исполнитель", "unknown": "Не определена"}
 SMP_NAMES = {1: "микропредприятие", 2: "малое предприятие", 3: "среднее предприятие"}
@@ -61,6 +62,7 @@ def _url(source: str, inn: str, card: dict) -> str:
         "rnp": f"https://zakupki.gov.ru/epz/dishonestsupplier/search/results.html?searchString={inn}",
         "reg_gisp": "https://gisp.gov.ru/pp719v2/pub/prod/",
         "reg_software": "https://reestr.digital.gov.ru/reestr/",
+        "history": "https://zakupki.gov.ru/",
     }.get(source) or f"https://www.nalog.gov.ru/opendata/7707329152-{source.removeprefix('fns_')}/"
 
 
@@ -112,7 +114,7 @@ def _money(v: float) -> str:
 
 def _reasons(row: dict, role: dict) -> list[str]:
     out = []
-    if role["value"] == "manufacturer" and len(role["evidence"]) > 1:
+    if role["value"] in ("manufacturer", "distributor") and len(role["evidence"]) > 1:
         out.append(role["evidence"][1])
     if row.get("revenue"):
         out.append(f"Выручка {_money(row['revenue'])} за {row.get('finance_year') or 'последний'} г.")

@@ -121,6 +121,14 @@ def test_bo_finance_in_rubles():
     assert f["net_profit"] == 3_907_000
 
 
+def test_bo_search_gives_okved():
+    http = FakeHttp({"advanced-search": {"content": [{"id": 6530703, "inn": "<strong>7605016030</strong>",
+                                                      "shortName": "ООО ТЕНЗОР", "okved2": "62.01"}]},
+                     "/bfo/": []})
+    f = facts(run(bo.fetch(http, "7605016030")))
+    assert f["okved_main"] == "62.01" and f["bo_id"] == "6530703" and f["bfo_found"] is False
+
+
 def test_bo_hidden_reporting():
     http = FakeHttp({"advanced-search": {"content": []}})
     assert facts(run(bo.fetch(http, "7707049388"))) == {"bfo_found": False}
@@ -342,3 +350,34 @@ def test_webservice_adapter(db_url, monkeypatch):
     new = out["7801000001"]
     assert new.is_new and new.status == "Новый в пуле" and new.role == "Производитель"
     assert 0 < new.score <= webservice.NEW_SCORE_CAP
+
+
+# --- история закупок и роль «дистрибьютор» ---
+
+def test_history_compute(tmp_path):
+    from enrichment import history
+    (tmp_path / "s.csv").write_text('"lot_id";"supplier_inn";"supplier_kpp";"is_winner"\n'
+                                    '1;"7804428656";"1";true\n2;"7804428656";"1";false\n3;"0274000001";;true\n')
+    (tmp_path / "t.csv").write_text('"lot_id";"product_name";"okpd2_code"\n'
+                                    '1;А;"21.20.10.110"\n1;Б;"21.20.10.120"\n2;В;"32.50.13.190"\n3;Г;"33.12"\n')
+    (tmp_path / "n.csv").write_text('"publish_date";"lot_id";"customer_inn"\n'
+                                    '2024-01-01;1;"7800000001"\n2025-05-01;2;"7800000002"\n2025-01-01;3;"7800000001"\n')
+    df = history.compute(str(tmp_path / "s.csv"), str(tmp_path / "t.csv"), str(tmp_path / "n.csv"))
+    r = {x["supplier_inn"]: x for x in df.to_dicts()}
+    a = r["7804428656"]
+    assert (a["hist_lots"], a["hist_wins"], a["hist_customers"]) == (2, 1, 2)
+    assert (a["hist_okpd2_codes"], a["hist_okpd2_classes"], a["hist_last_date"]) == (3, 2, "2025-05-01")
+    assert {c["cls"]: c["n"] for c in a["hist_class_codes"]} == {"21": 2, "32": 1}
+    assert "0274000001" in r  # ведущий ноль ИНН сохранён
+
+
+def test_classify_distributor_by_history():
+    wide = {"hist_class_codes": {"21": 37}, "hist_okpd2_codes": 40, "hist_okpd2_classes": 3, "hist_customers": 12}
+    r = discovery.classify_role({"okved_main": "46.46"} | wide, ["21.20.10.120"])
+    assert r["value"] == "distributor" and r["confidence"] == "high"
+    assert "37 разными кодами ОКПД2 класса 21" in " ".join(r["evidence"])
+    assert discovery.classify_role({"okved_main": "46.46"}, ["21.20.10.120"])["confidence"] == "medium"
+    only_hist = discovery.classify_role(wide, ["21.20.10.120"])
+    assert only_hist["value"] == "distributor" and only_hist["confidence"] == "low"  # только из истории
+    narrow = discovery.classify_role({"hist_lots": 3, "hist_wins": 1, "hist_class_codes": {"21": 1}}, ["21.20"])
+    assert narrow["value"] == "supplier" and narrow["confidence"] == "low"

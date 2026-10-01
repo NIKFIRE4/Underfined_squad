@@ -22,7 +22,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from . import discovery, fns_dumps, registries, storage
+from . import discovery, fns_dumps, history, registries, storage
 from .card import build_company
 from .http import Http
 from .inn import is_valid_inn
@@ -67,6 +67,11 @@ async def cmd_enrich(args) -> None:
 async def cmd_batch(args) -> None:
     engine, http = _engine(args.db), Http()
     inns = args.inns or supplier_inns(args.suppliers)
+    if args.missing_status:
+        with engine.connect() as conn:
+            unknown = {r[0] for r in conn.execute(
+                select(storage.companies.c.inn).where(storage.companies.c.is_active.is_(None)))}
+        inns = [i for i in inns if i in unknown]
     if not args.force:
         done = storage.done_inns(engine, args.sources)
         inns = [i for i in inns if i not in done]
@@ -159,6 +164,13 @@ def cmd_discover(args) -> None:
     log.info("найдено %d новых компаний", len(found))
 
 
+def cmd_history_load(args) -> None:
+    engine = _engine(args.db)
+    results = history.load(suppliers=args.suppliers)
+    storage.save_results(engine, results)
+    rebuild_all(engine, {r.inn for r in results})
+
+
 def rebuild_all(engine, inns: set[str] | None = None) -> None:
     facts, runs = storage.load_all(engine, inns)
     rows = [build_company(inn, facts.get(inn, []), runs.get(inn, {}))[0] for inn in runs]
@@ -202,6 +214,8 @@ def main() -> None:
     b.add_argument("--limit", type=int)
     b.add_argument("--concurrency", type=int, default=6)
     b.add_argument("--force", action="store_true", help="перезапросить уже обогащённые")
+    b.add_argument("--missing-status", action="store_true",
+                   help="только ИНН, у которых статус «действующая» неизвестен (для --sources egrul)")
     sources_arg(b)
 
     datasets = list(fns_dumps.DATASETS)
@@ -216,6 +230,8 @@ def main() -> None:
     rl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     rl.add_argument("--gisp", help=f"по умолчанию {registries.GISP_PATH}")
     rl.add_argument("--software", help=f"по умолчанию {registries.SOFTWARE_GLOB}")
+    hl = sub.add_parser("history-load", help="признаки из истории закупок (роль «дистрибьютор»)")
+    hl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     dc = sub.add_parser("discover", help="новые компании по ОКПД2 лота (ФТ-06)")
     dc.add_argument("okpd2", nargs="+")
     dc.add_argument("--regions", type=lambda s: s.split(","), default=["78", "47"])
@@ -246,6 +262,8 @@ def main() -> None:
         cmd_fns_load(args)
     elif args.cmd == "registries-load":
         cmd_registries_load(args)
+    elif args.cmd == "history-load":
+        cmd_history_load(args)
     elif args.cmd == "discover":
         cmd_discover(args)
     elif args.cmd == "rebuild":

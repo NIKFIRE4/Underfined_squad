@@ -172,6 +172,35 @@ SERVICE_CLASSES = {33, 41, 42, 43, 49, 52, 56, 62, 63, 68, 69, 70, 71, 72, 73, 7
                    85, 86, 87, 88, 93, 95, 96}
 
 
+# «Широкий набор разных ОКПД2 в истории» (ТЗ 6.4). Медиана — 1 код, 90-й перцентиль — 12, 99-й — 113.
+WIDE_IN_CLASS = 10          # разных кодов в классе лота
+WIDE_TOTAL, WIDE_CLASSES = 30, 5
+MANY_CUSTOMERS = 5
+
+
+def _history(company: dict, lot_classes: set) -> tuple[bool, list[str]]:
+    """(широкий ассортимент по истории, доказательства)."""
+    by_class = company.get("hist_class_codes") or {}
+    total, classes = company.get("hist_okpd2_codes") or 0, company.get("hist_okpd2_classes") or 0
+    customers = company.get("hist_customers") or 0
+    ev = []
+    in_class = [(c, by_class.get(f"{c:02d}", 0)) for c in lot_classes if c is not None]
+    wide_class = [(c, n) for c, n in in_class if n >= WIDE_IN_CLASS]
+    for c, n in wide_class:
+        ev.append(f"Участвовал в лотах с {n} разными кодами ОКПД2 класса {c:02d}")
+    wide_total = total >= WIDE_TOTAL and classes >= WIDE_CLASSES
+    if wide_total and not wide_class:
+        ev.append(f"В истории {total} разных кодов ОКПД2 из {classes} классов")
+    if (wide_class or wide_total) and customers >= MANY_CUSTOMERS:
+        ev.append(f"Поставлял {customers} разным заказчикам")
+    return bool(wide_class or wide_total), ev
+
+
+def _supplier_history_evidence(company: dict) -> list[str]:
+    lots, wins = company.get("hist_lots"), company.get("hist_wins")
+    return [f"В истории закупок СПб: {lots} лотов, {wins} побед"] if lots else []
+
+
 def _cls(code: str | None) -> int | None:
     try:
         return int((code or "").split(".")[0])
@@ -181,7 +210,9 @@ def _cls(code: str | None) -> int | None:
 
 def classify_role(company: dict, lot_okpd2: list[str] | None = None) -> dict:
     """{value, label, confidence, evidence}. `company` — строка витрины companies или факты карточки:
-    okved_main, okved_extra, gisp_okpd2, software_okpd2, products."""
+    okved_main, gisp_okpd2, software_okpd2, products, hist_* (история закупок).
+    Уверенность по ТЗ 6.4: high — совпали правила по ОКВЭД и по реестру/истории; medium — одно правило;
+    low — роль выведена только из истории закупок или по нетипичному ОКВЭД."""
     main = company.get("okved_main")
     main_cls = _cls(main)
     lot_okpd2 = lot_okpd2 or []
@@ -211,10 +242,21 @@ def classify_role(company: dict, lot_okpd2: list[str] | None = None) -> dict:
         conf = "high" if rule_okved and rule_registry else "medium"
         label = "Правообладатель" if sw_hit and not reg_hit and not rule_okved else "Производитель"
         return {"value": "manufacturer", "label": label, "confidence": conf, "evidence": evidence}
+    wide, hist_ev = _history(company, lot_classes)
     if main_cls == 46:
-        return {"value": "distributor", "label": "Дистрибьютор", "confidence": "medium", "evidence": evidence}
+        return {"value": "distributor", "label": "Дистрибьютор", "confidence": "high" if wide else "medium",
+                "evidence": evidence + hist_ev}
     if main_cls == 47 or main_cls in SERVICE_CLASSES:
-        return {"value": "supplier", "label": "Поставщик-исполнитель", "confidence": "medium", "evidence": evidence}
+        return {"value": "supplier", "label": "Поставщик-исполнитель", "confidence": "medium",
+                "evidence": evidence + _supplier_history_evidence(company)}
+    if wide:
+        # ОКВЭД не торговый и не сервисный (или неизвестен), но ассортимент в истории широкий
+        return {"value": "distributor", "label": "Дистрибьютор", "confidence": "medium" if main else "low",
+                "evidence": evidence + hist_ev}
     if main:
-        return {"value": "supplier", "label": "Поставщик-исполнитель", "confidence": "low", "evidence": evidence}
+        return {"value": "supplier", "label": "Поставщик-исполнитель", "confidence": "low",
+                "evidence": evidence + _supplier_history_evidence(company)}
+    if company.get("hist_lots"):
+        return {"value": "supplier", "label": "Поставщик-исполнитель", "confidence": "low",
+                "evidence": _supplier_history_evidence(company)}
     return {"value": "unknown", "label": "Не определена", "confidence": "low", "evidence": []}
