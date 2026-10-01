@@ -61,6 +61,7 @@ DEFAULT_INTERVALS = {
     "rmsp": 0.3,
     "bo": 0.5,
     "rnp": 1.0,
+    "contacts": 0.7,  # тот же хост, что РНП (zakupki.gov.ru); вместе с РНП ~2,4 запроса/с
 }
 
 

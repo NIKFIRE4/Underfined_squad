@@ -14,7 +14,9 @@ from . import storage
 
 router = APIRouter(tags=["Служебное"])
 
-TRACKED = {"bo": "ГИР БО (финансы, ОКВЭД)", "rnp": "РНП ЕИС", "egrul": "ЕГРЮЛ (статус)", "pb": "Прозрачный бизнес"}
+TRACKED = {"bo": "ГИР БО (финансы, ОКВЭД, статус)", "rnp": "РНП ЕИС",
+           "contacts": "Контакты (контракты ЕИС: телефон, почта)",
+           "egrul": "ЕГРЮЛ (статус)", "pb": "Прозрачный бизнес"}
 RATE_WINDOW = timedelta(minutes=10)
 STALE_AFTER = timedelta(minutes=5)
 PAGE = (Path(__file__).parent / "progress.html").read_text(encoding="utf-8")
@@ -41,6 +43,10 @@ def compute(engine) -> dict:
             .group_by(runs.c.source)).all()}
         last = dict(conn.execute(select(runs.c.source, func.max(runs.c.updated_at))
                                  .where(runs.c.source.in_(TRACKED)).group_by(runs.c.source)).all())
+        found = conn.execute(select(func.count()).select_from(storage.company_facts).where(
+            storage.company_facts.c.source == "contacts", storage.company_facts.c.field == "contact_phones")).scalar()
+        found_email = conn.execute(select(func.count()).select_from(storage.company_facts).where(
+            storage.company_facts.c.source == "contacts", storage.company_facts.c.field == "contact_emails")).scalar()
         errors = conn.execute(select(runs.c.source, runs.c.inn, runs.c.status, runs.c.error, runs.c.updated_at)
                               .where(runs.c.source.in_(TRACKED), runs.c.status != "ok")
                               .order_by(runs.c.updated_at.desc()).limit(8)).all()
@@ -53,7 +59,7 @@ def compute(engine) -> dict:
         n_recent, first = recent.get(src, (0, None))
         span_min = max((now - first).total_seconds() / 60, 1.0) if first else 1.0
         per_min = n_recent / span_min
-        if src in ("egrul", "pb") and not per_min:
+        if (src in ("egrul", "pb") and not per_min) or (src == "contacts" and not done):
             continue  # в шаг 5 не входят — показываем, только пока их кто-то гоняет
         remaining = max(total - done, 0)
         last_ts = _aware(last.get(src))
@@ -66,6 +72,7 @@ def compute(engine) -> dict:
             "last_at": last_ts.isoformat() if last_ts else None,
             "idle_s": int((now - last_ts).total_seconds()) if last_ts else None,
             "running": bool(last_ts and now - last_ts < STALE_AFTER),
+            "found": {"с телефоном": found, "с почтой": found_email} if src == "contacts" else None,
         })
     return {
         "now": now.isoformat(), "total_inns": total, "sources": sources,

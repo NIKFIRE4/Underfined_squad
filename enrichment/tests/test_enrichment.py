@@ -403,11 +403,18 @@ def test_api_supplier(db_url, monkeypatch):
         pb_res.add("name_short", "ООО ТЕСТ", ts)
         bo_res = SourceResult("bo", inn)
         bo_res.add("revenue", 5_000_000.0, ts)
-        return [pb_res, bo_res] + [SourceResult(s, inn, ok=False, error="captcha")
-                                    for s in sources if s not in ("pb", "bo")]
+        bo_res.add("bo_id", "4436757", ts)
+        ct = SourceResult("contacts", inn)
+        ct.add("contacts_found", True, ts)
+        ct.add("contact_phones", ["+78123271380"], ts)
+        ct.add("contact_emails", ["do@example.ru"], ts)
+        ct.add("contact_contract_url", "https://zakupki.gov.ru/epz/contract/contractCard/common-info.html?reestrNumber=1", ts)
+        return [pb_res, bo_res, ct] + [SourceResult(s, inn, ok=False, error="captcha")
+                                        for s in sources if s not in ("pb", "bo", "contacts")]
 
     monkeypatch.setenv("ENRICHMENT_DB", db_url)
     monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "_reqnums", lambda: {INN: ["0172200004925000426"]})
     with TestClient(api.app) as client:
         r = client.get(f"/api/suppliers/{INN}")
         assert r.status_code == 200
@@ -417,7 +424,12 @@ def test_api_supplier(db_url, monkeypatch):
         assert body["role"]["value"] == "distributor"
         assert body["fields"]["revenue"]["source"] == "bo"
         assert {s["source"]: s["status"] for s in body["sources_status"]}["rnp"] == "captcha"
-        assert calls[0][2] == {"captcha_retries": 0, "timeout": api.SOURCE_TIMEOUT}
+        assert calls[0][2] == {"captcha_retries": 0, "timeout": api.SOURCE_TIMEOUT,
+                               "hints": {"reqnums": ["0172200004925000426"], "name": None}}
+        assert body["contacts"]["phones"] == ["+78123271380"] and body["contacts"]["found"] is True
+        kinds = {l["title"]: l["kind"] for l in body["links"]}
+        assert kinds["Контракт ЕИС с контактами поставщика"] == "contact"
+        assert any("organizations-card/4436757" in l["url"] for l in body["links"])
 
         # повторный запрос — из базы, без похода в интернет
         r2 = client.get(f"/api/suppliers/{INN}").json()
@@ -456,3 +468,20 @@ def test_progress(db_url):
     assert bo["running"] and bo["per_min"] > 0 and bo["eta_min"] is not None
     assert [s["source"] for s in d["sources"]] == ["bo", "rnp"]  # rnp с 0% виден, egrul/pb вне шага 5 скрыты
     assert d["recent_errors"][0]["inn"] == "7814778459"
+
+
+def test_contacts_parse_and_fetch():
+    from enrichment.sources import contacts
+    html = (FX / "eis_participants.html").read_text(encoding="utf-8")
+    p = contacts.parse_participants(html)[0]
+    assert p["inn"] == "7813037232" and p["phones"] == ["+78123271380"] and p["emails"] == ["do@zaoff.spb.ru"]
+    assert contacts._phones("8(812)327-13-80, +7 921 000 11 22") == ["+78123271380", "+79210001122"]
+    assert contacts.search_name('ООО "БРАСС"') == "БРАСС"
+    search = '<a href="/epz/contract/contractCard/common-info.html?reestrNumber=2781409670624000014">'
+    http = FakeHttp({"search/results": search, "participants": html})
+    f = facts(run(contacts.fetch(http, "7813037232", ["0172200004923000344"], None)))
+    assert f["contacts_found"] and f["contact_emails"] == ["do@zaoff.spb.ru"]
+    assert f["contact_found_by"] == "закупка 0172200004923000344"
+    # чужой ИНН в карточке — контакты не берём
+    f2 = facts(run(contacts.fetch(http, "7804428656", ["0172200004923000344"], None)))
+    assert f2 == {"contacts_found": False}

@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 
 from . import discovery, fns_dumps, history, registries, storage
 from .card import build_company
+from .card import links as card_links
 from .http import Http
 from .inn import is_valid_inn
 from .pipeline import ALL_SOURCES, enrich, rebuild_company
@@ -79,6 +80,15 @@ async def cmd_batch(args) -> None:
         inns = inns[: args.limit]
     log.info("batch: %d INN, sources=%s, concurrency=%d", len(inns), args.sources, args.concurrency)
 
+    reqnums, names = {}, {}
+    if "contacts" in args.sources:  # подсказки для поиска контракта: номера закупок и название
+        reqnums = history.won_reqnums(args.suppliers)
+        with engine.connect() as conn:
+            names = {i: n1 or n2 for i, n1, n2 in conn.execute(
+                select(storage.companies.c.inn, storage.companies.c.name_short, storage.companies.c.name_full))}
+        log.info("contacts: номера закупок для %d ИНН, названия для %d", len(reqnums), len(names))
+        inns.sort(key=lambda i: i not in reqnums)  # стабильно: внутри групп порядок по активности
+
     queue: asyncio.Queue[str] = asyncio.Queue()
     for i in inns:
         queue.put_nowait(i)
@@ -92,7 +102,8 @@ async def cmd_batch(args) -> None:
             except asyncio.QueueEmpty:
                 return
             try:
-                row = await enrich(http, engine, inn, args.sources)
+                hints = {"reqnums": reqnums.get(inn), "name": names.get(inn)}
+                row = await enrich(http, engine, inn, args.sources, hints)
                 stats[row["enrichment_status"]] += 1
             except Exception as e:  # noqa: BLE001
                 stats["crash"] += 1
@@ -173,7 +184,9 @@ def cmd_history_load(args) -> None:
 
 EXPORT_EXTRA = ["okved_main_name", "reg_year", "smp_since", "employees_as_of", "taxes_paid_as_of", "revenue_tax",
                 "hist_lots", "hist_wins", "hist_customers", "hist_okpd2_codes", "hist_okpd2_classes",
-                "hist_last_date", "hist_class_codes", "finance_by_year"]
+                "hist_last_date", "hist_class_codes", "finance_by_year",
+                "contacts_found", "contact_phones", "contact_emails", "contact_postal_address",
+                "contact_contract_url", "website", "links"]
 
 
 def _csv_value(v):
@@ -196,6 +209,7 @@ def cmd_export_csv(args) -> None:
     for inn in sorted(i for i in facts if is_valid_inn(i)):
         row, card = build_company(inn, facts[inn], runs.get(inn, {}))
         full = row | {k: v["value"] for k, v in card.items() if k not in row}
+        full["links"] = card_links(inn, full)
         role = discovery.classify_role(full)
         full |= {"role": role["value"], "role_label": role["label"], "role_confidence": role["confidence"],
                  "role_evidence": " | ".join(role["evidence"]),

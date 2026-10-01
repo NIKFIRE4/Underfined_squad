@@ -81,6 +81,8 @@ function card(s) {
       <div class="stat err"><div class="v">${fmt(s.error)}</div><div class="l">ошибок</div></div>
       <div class="stat cap"><div class="v">${fmt(s.captcha)}</div><div class="l">капч</div></div>
       <div class="stat"><div class="v">${ago(s.idle_s)}</div><div class="l">последняя запись</div></div>
+      ${s.found ? Object.entries(s.found).map(([k, v]) =>
+        `<div class="stat"><div class="v" style="color:var(--ok)">${fmt(v)}</div><div class="l">${k}</div></div>`).join("") : ""}
     </div></div>`;
 }
 

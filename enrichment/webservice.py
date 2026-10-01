@@ -42,6 +42,7 @@ SOURCE_LABELS = {
     "fns_taxoffence": "Налоговые правонарушения (открытые данные ФНС)",
     "reg_gisp": "Реестр промышленной продукции (ПП 719)", "reg_software": "Реестр российского ПО",
     "history": "История закупок АИС ГЗ и ЭМ (выгрузка организаторов)",
+    "contacts": "Контракты ЕИС (контакты поставщика)",
 }
 # поля, которые показываем в sources: то, на чём основаны фильтры, роль, статус и причины
 SOURCE_FIELDS = ("status", "reg_date", "okved_main", "is_smp", "smp_category", "revenue", "employees",
@@ -63,6 +64,7 @@ def _url(source: str, inn: str, card: dict) -> str:
         "reg_gisp": "https://gisp.gov.ru/pp719v2/pub/prod/",
         "reg_software": "https://reestr.digital.gov.ru/reestr/",
         "history": "https://zakupki.gov.ru/",
+        "contacts": card.get("contact_contract_url", {}).get("value") or "https://zakupki.gov.ru/epz/contract/search/results.html",
     }.get(source) or f"https://www.nalog.gov.ru/opendata/7707329152-{source.removeprefix('fns_')}/"
 
 

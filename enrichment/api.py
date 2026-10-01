@@ -25,8 +25,10 @@ from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from . import storage
-from .card import build_company
+from functools import lru_cache
+
+from . import history, storage
+from .card import build_company, links
 from .discovery import classify_role
 from .http import Http
 from .inn import inn_kind, is_valid_inn
@@ -35,7 +37,7 @@ from .webservice import SOURCE_LABELS, _url
 
 log = logging.getLogger("enrichment")
 
-LIVE_SOURCES = ["pb", "bo", "rmsp", "rnp", "egrul"]
+LIVE_SOURCES = ["pb", "bo", "rmsp", "rnp", "egrul", "contacts"]
 SOURCE_TIMEOUT = float(os.environ.get("ENRICH_API_SOURCE_TIMEOUT", "15"))
 BATCH_MAX = 50
 BATCH_CONCURRENCY = 4
@@ -122,6 +124,12 @@ class SupplierCard(BaseModel):
         "revenue, revenue_prev, net_profit, equity, finance_by_year, taxes_paid, tax_arrears_total, tax_regimes, "
         "in_rnp, rnp_entries, in_gisp, gisp_okpd2, in_software_registry, hist_lots, hist_wins, hist_okpd2_codes, "
         "hist_class_codes, needs_review, enrichment_status, …"))
+    contacts: dict[str, Any] | None = Field(None, description=(
+        "Контакты из карточки контракта ЕИС: phones, emails, postal_address, contract_url (источник), "
+        "found_by (как найден контракт), found. null — ещё не искали"))
+    links: list[dict[str, str]] = Field(default_factory=list, description=(
+        "Ссылки на компанию: сайт и контракт с контактами (kind=contact), карточки на площадках (profile), "
+        "проверка РНП (check)"))
     role: Role
     risk_flags: list[RiskFlag]
     fields: dict[str, FieldValue] = Field(description="Каждое поле с источником и датой получения (ТЗ, ФТ-07)")
@@ -167,9 +175,15 @@ def _card(inn: str) -> dict | None:
     row, fields = build_company(inn, facts, runs)
     storage.save_company(engine, row)  # витрина companies всегда соответствует последним фактам
     values = {k: v["value"] for k, v in fields.items()}
+    contacts = None
+    if "contacts" in runs:
+        contacts = {k: values.get(f"contact_{k}") for k in ("phones", "emails", "postal_address", "contract_url",
+                                                             "found_by")} | {"found": bool(values.get("contacts_found"))}
     return {
         "inn": inn,
         "kind": inn_kind(inn),
+        "contacts": contacts,
+        "links": links(inn, row | values),
         "company": {k: _json(v) for k, v in row.items()},
         "role": classify_role(row | values),
         "risk_flags": row.get("risk_flags") or [],
@@ -181,6 +195,21 @@ def _card(inn: str) -> dict | None:
     }
 
 
+@lru_cache(maxsize=1)
+def _reqnums() -> dict:
+    """Номера выигранных закупок ЕИС по ИНН — ключ к контракту с контактами. Нет CSV — пусто."""
+    try:
+        return history.won_reqnums()
+    except Exception as e:  # noqa: BLE001
+        log.warning("reqnums: %s — контакты будут искаться только по названию", e)
+        return {}
+
+
+def _hints(inn: str) -> dict:
+    facts = {f.field: f.value for f in storage.load_facts(state["engine"], inn)}
+    return {"reqnums": _reqnums().get(inn), "name": facts.get("name_short") or facts.get("name_full")}
+
+
 async def _enrich(inn: str, refresh: bool) -> dict:
     if not is_valid_inn(inn):
         raise HTTPException(400, f"Некорректный ИНН {inn}: 10 цифр для юрлица, 12 для ИП, проверка контрольной суммы")
@@ -188,7 +217,8 @@ async def _enrich(inn: str, refresh: bool) -> dict:
     todo = LIVE_SOURCES if refresh else [s for s in LIVE_SOURCES if s not in runs]
     fetched = []
     if todo:
-        results = await fetch_all(state["http"], inn, todo, captcha_retries=0, timeout=SOURCE_TIMEOUT)
+        hints = await asyncio.to_thread(_hints, inn) if "contacts" in todo else None
+        results = await fetch_all(state["http"], inn, todo, captcha_retries=0, timeout=SOURCE_TIMEOUT, hints=hints)
         await asyncio.to_thread(storage.save_results, state["engine"], results)
         fetched = [r.source for r in results]
     card = await asyncio.to_thread(_card, inn)

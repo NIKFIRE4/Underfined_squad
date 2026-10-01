@@ -119,6 +119,9 @@ def load_software(path: Path) -> dict[str, dict]:
             item = out[inn].setdefault(code, {"count": 0, "sample": r.get("Наименование ПО"),
                                               "org": r.get("Сокращенное наименование (ФИО) правообладателя")})
             item["count"] += 1
+            site = str(r.get("Сайт с документацией по установке и эксплуатации ПО") or "").strip()
+            if site.startswith(("http", "www")) and not item.get("site"):
+                item["site"] = site
     log.info("Реестр ПО: %d записей, действующих %d, правообладателей %d", total, active, len(out))
     return out
 
@@ -152,5 +155,7 @@ def load(name: str, targets: set[str], path: str | None = None) -> tuple[list[So
         if codes:
             top = sorted(codes.items(), key=lambda kv: -kv[1]["count"])[:MAX_CODES_PER_FACT]
             res.add(codes_field, [{"okpd2": c, "count": v["count"], "sample": v.get("sample")} for c, v in top], fetched_at)
+            site = next((v["site"] for v in codes.values() if v.get("site")), None)
+            res.add("website", site, fetched_at)
         results.append(res)
     return results, items
