@@ -381,3 +381,49 @@ def test_classify_distributor_by_history():
     assert only_hist["value"] == "distributor" and only_hist["confidence"] == "low"  # только из истории
     narrow = discovery.classify_role({"hist_lots": 3, "hist_wins": 1, "hist_class_codes": {"21": 1}}, ["21.20"])
     assert narrow["value"] == "supplier" and narrow["confidence"] == "low"
+
+
+# --- HTTP API: ИНН → карточка ---
+
+def test_api_supplier(db_url, monkeypatch):
+    from fastapi.testclient import TestClient
+    from enrichment import api
+
+    calls = []
+
+    async def fake_fetch_all(http, inn, sources, **kw):
+        calls.append((inn, tuple(sources), kw))
+        ts = now_utc()
+        pb_res = SourceResult("pb", inn)
+        pb_res.add("status", "Действующая организация", ts)
+        pb_res.add("okved_main", "46.46", ts)
+        pb_res.add("name_short", "ООО ТЕСТ", ts)
+        bo_res = SourceResult("bo", inn)
+        bo_res.add("revenue", 5_000_000.0, ts)
+        return [pb_res, bo_res] + [SourceResult(s, inn, ok=False, error="captcha")
+                                    for s in sources if s not in ("pb", "bo")]
+
+    monkeypatch.setenv("ENRICHMENT_DB", db_url)
+    monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    with TestClient(api.app) as client:
+        r = client.get(f"/api/suppliers/{INN}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["cached"] is False and set(body["fetched_now"]) == set(api.LIVE_SOURCES)
+        assert body["company"]["name_short"] == "ООО ТЕСТ" and body["company"]["is_active"] is True
+        assert body["role"]["value"] == "distributor"
+        assert body["fields"]["revenue"]["source"] == "bo"
+        assert {s["source"]: s["status"] for s in body["sources_status"]}["rnp"] == "captcha"
+        assert calls[0][2] == {"captcha_retries": 0, "timeout": api.SOURCE_TIMEOUT}
+
+        # повторный запрос — из базы, без похода в интернет
+        r2 = client.get(f"/api/suppliers/{INN}").json()
+        assert r2["cached"] is True and len(calls) == 1
+        # refresh — снова во все источники
+        client.get(f"/api/suppliers/{INN}?refresh=true")
+        assert len(calls) == 2
+
+        assert client.get("/api/suppliers/7707049389").status_code == 400  # контрольная сумма
+        b = client.post("/api/suppliers/batch", json={"inns": [INN, "123"]}).json()["items"]
+        assert b[0]["inn"] == INN and "error" in b[1]
+        assert client.get("/api/health").json()["companies_in_db"] >= 1

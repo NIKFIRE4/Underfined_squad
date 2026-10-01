@@ -16,6 +16,25 @@
 
 Плюс поиск **новых компаний** по ОКВЭД, которых нет в выгрузке (ФТ-06, статус «Новый в пуле»). Это блок «Обогащение и расширение пула» — 25 баллов из 100.
 
+## API: ИНН → карточка компании
+
+```bash
+docker compose up -d db enrichment-api        # API на http://localhost:8010, Swagger — http://localhost:8010/docs
+curl localhost:8010/api/suppliers/7804428656  # карточка по ИНН
+curl "localhost:8010/api/suppliers/7804428656?refresh=true"   # перезапросить источники
+curl -X POST localhost:8010/api/suppliers/batch -H 'Content-Type: application/json' -d '{"inns":["7804428656","7707083893"]}'
+```
+
+| Метод | Путь | Что делает |
+|---|---|---|
+| GET | `/api/suppliers/{inn}` | карточка: реквизиты, статус, ОКВЭД, МСП, финансы, налоги, РНП, реестры, история, роль, флаги риска; у каждого поля — источник и дата (`fields`) |
+| POST | `/api/suppliers/batch` | до 50 ИНН за запрос |
+| GET | `/api/health` | состояние и число компаний в базе |
+
+**Один раз заполнить, потом отвечать из базы.** База заполняется заранее (дамп или `scripts/enrich_all.sh`). Эндпоинт идёт в интернет только за онлайн-источниками (ПБ, ЕГРЮЛ, РМСП, ГИР БО, РНП), которые по этому ИНН ещё не запрашивались, и сохраняет результат — следующий запрос уже из базы. Капчу ФНС не ждёт: таймаут на источник `ENRICH_API_SOURCE_TIMEOUT` (15 с), недоступный источник — `captcha` / `error` / `timeout` в `sources_status`, перезапрос — `refresh=true`.
+
+Замер 2026-10-01: из базы — 6–15 мс; ИНН, которого не было, — 2–3,5 с.
+
 ## Быстрый старт
 
 **Перед запуском положите в `dataset/`** (папка не в git):
@@ -31,7 +50,7 @@ docker compose up -d db
 docker compose run --rm --entrypoint scripts/enrich_all.sh enrichment
 docker compose run --rm -e ENRICH_LIMIT=300 --entrypoint scripts/enrich_all.sh enrichment   # быстрый прогон
 
-# проверка без сети (22 теста, < 1 с); вторая строка — те же тесты на PostgreSQL стенда:
+# проверка без сети (23 теста, ~1 с); вторая строка — те же тесты на PostgreSQL стенда:
 # SQLite не проверяет длину строк и типы, поэтому перед прогоном на стенде гоняйте обе
 docker compose run --rm --entrypoint python enrichment -m pytest enrichment/tests -q
 docker compose exec db createdb -U squad squad_test   # один раз
@@ -131,6 +150,9 @@ enrichment/
   card.py                             выбор значения по приоритету источников, расхождения, флаги риска
   registries.py                       РРПП и реестр ПО из XLSX
   discovery.py                        новые компании по ОКПД2 лота (ФТ-06) и роль (ТЗ 6.4)
+  history.py                          признаки из истории закупок (роль «дистрибьютор»)
+  api.py                              HTTP API (FastAPI): ИНН → карточка, Swagger на /docs
+  webservice.py                       адаптер под контракт web-service
   tests/                              офлайн-тесты на сохранённых реальных ответах
   storage.py                          SQLAlchemy Core: SQLite или PostgreSQL
   __main__.py                         CLI
@@ -235,7 +257,8 @@ from enrichment.webservice import READY, enrich  # noqa: E402,F401
 - [x] Адаптер под контракт `web-service/INTEGRATION.md`
 - [x] Docker и PostgreSQL; скрипт полного прогона; перенос базы дампом
 - [x] Устойчивость: загрузка выгрузок частями с CRC, битый XML не роняет разбор, схема проверена на PostgreSQL
-- [x] 22 офлайн-теста на реальных ответах, проходят на SQLite и на PostgreSQL
+- [x] HTTP API ИНН → карточка со Swagger (`/docs`), сервис `enrichment-api` в docker compose
+- [x] 23 офлайн-теста на реальных ответах, проходят на SQLite и на PostgreSQL
 
 ### Состояние машины разработки (@stoff7, на 2026-10-01 15:00)
 
