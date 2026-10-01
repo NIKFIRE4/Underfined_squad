@@ -1,0 +1,116 @@
+{
+ "inn": "7804428656",
+ "kind": "ul",
+ "cached": true,
+ "fetched_now": [],
+ "company": {
+  "inn": "7804428656",
+  "kind": "ul",
+  "name_full": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"БРАСС\"",
+  "name_short": "ООО \"БРАСС\"",
+  "ogrn": "1099847036750",
+  "kpp": "780601001",
+  "region_code": "78",
+  "address": "195160, Г.САНКТ-ПЕТЕРБУРГ, ВН.ТЕР.Г. МУНИЦИПАЛЬНЫЙ ОКРУГ БОЛЬШАЯ ОХТА, НАБ. СВЕРДЛОВСКАЯ, Д. 58, ЛИТЕРА А, КВ. 65",
+  "status": "Действующая организация",
+  "is_active": true,
+  "reg_date": "2009-12-22",
+  "age_years": 16.77,
+  "director": {
+   "post": "ГЕНЕРАЛЬНЫЙ ДИРЕКТОР",
+   "name": "Двуреченский Федор Васильевич"
+  },
+  "okved_main": "33.12",
+  "okved_main_name": "Ремонт машин и оборудования",
+  "okved_extra": [
+   "36.00",
+   "37.00",
+   "42.21"
+  ],
+  "is_smp": true,
+  "smp_category": 1,
+  "employees": 8.0,
+  "revenue": 17366000.0,
+  "revenue_prev": 24525000.0,
+  "net_profit": 3907000.0,
+  "equity": 3220000.0,
+  "finance_year": 2025,
+  "taxes_paid": 1618399.0,
+  "tax_arrears_total": 0.0,
+  "tax_regimes": [
+   "usn"
+  ],
+  "in_rnp": false,
+  "in_gisp": false,
+  "in_software_registry": false,
+  "hist_lots": 7,
+  "hist_wins": 7,
+  "hist_okpd2_codes": 3,
+  "needs_review": false,
+  "risk_flags": [],
+  "enrichment_status": "full"
+ },
+ "role": {
+  "value": "supplier",
+  "label": "Поставщик-исполнитель",
+  "confidence": "medium",
+  "evidence": [
+   "Основной ОКВЭД 33.12 — Ремонт машин и оборудования",
+   "В истории закупок СПб: 7 лотов, 7 побед"
+  ]
+ },
+ "risk_flags": [],
+ "fields": {
+  "status": {
+   "value": "Действующая организация",
+   "source": "pb",
+   "fetched_at": "2026-10-01T12:13:41.599372+00:00"
+  },
+  "okved_main": {
+   "value": "33.12",
+   "source": "fns_rsmp",
+   "fetched_at": "2026-10-01T11:16:31.766231+00:00"
+  },
+  "revenue": {
+   "value": 17366000.0,
+   "source": "bo",
+   "fetched_at": "2026-10-01T10:44:34.347144+00:00"
+  },
+  "employees": {
+   "value": 8.0,
+   "source": "pb",
+   "fetched_at": "2026-10-01T12:13:41.599372+00:00"
+  },
+  "in_rnp": {
+   "value": false,
+   "source": "rnp",
+   "fetched_at": "2026-10-01T10:44:34.024842+00:00"
+  }
+ },
+ "sources_status": [
+  {
+   "source": "bo",
+   "name": "ГИР БО (бухотчётность)",
+   "status": "ok",
+   "url": "https://bo.nalog.gov.ru/search?query=7804428656"
+  },
+  {
+   "source": "egrul",
+   "name": "ЕГРЮЛ/ЕГРИП",
+   "status": "ok",
+   "url": "https://egrul.nalog.ru/"
+  },
+  {
+   "source": "fns_debtam",
+   "name": "Недоимки (открытые данные ФНС)",
+   "status": "ok",
+   "url": "https://www.nalog.gov.ru/opendata/7707329152-debtam/"
+  },
+  {
+   "source": "fns_paytax",
+   "name": "Уплаченные налоги (открытые данные ФНС)",
+   "status": "ok",
+   "url": "https://www.nalog.gov.ru/opendata/7707329152-paytax/"
+  }
+ ]
+}

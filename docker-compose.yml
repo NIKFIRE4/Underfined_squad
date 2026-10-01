@@ -1,4 +1,4 @@
-# Общий стенд. Сейчас: PostgreSQL + обогащение. Сервисы бэкенда, модели и UI добавляются сюда же.
+# Общий стенд. Сейчас: PostgreSQL + обогащение (CLI) + API обогащения на :8010. Сервисы бэкенда, модели и UI добавляются сюда же.
 #
 #   docker compose up -d db
 #   docker compose run --rm enrichment enrich 7707049388 --full
@@ -35,6 +35,28 @@ services:
       db:
         condition: service_healthy
     profiles: ["tools"]  # запускается через `docker compose run`, не висит постоянно
+
+  enrichment-api:
+    # ИНН → карточка компании из открытых источников: GET /api/suppliers/{inn}; документация — /docs
+    build:
+      context: .
+      dockerfile: enrichment/Dockerfile
+    entrypoint: ["uvicorn", "enrichment.api:app", "--host", "0.0.0.0", "--port", "8010"]
+    command: []
+    environment:
+      ENRICHMENT_DB: postgresql+psycopg://${POSTGRES_USER:-squad}:${POSTGRES_PASSWORD:-squad}@db:5432/${POSTGRES_DB:-squad}
+      ENRICH_API_SOURCE_TIMEOUT: ${ENRICH_API_SOURCE_TIMEOUT:-15}
+    ports:
+      - "${ENRICH_API_PORT:-8010}:8010"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata:

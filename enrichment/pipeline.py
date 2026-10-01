@@ -20,17 +20,21 @@ CAPTCHA_COOLDOWN = 150  # секунд паузы после капчи; бло�
 CAPTCHA_RETRIES = 2
 
 
-async def _guard(source: str, inn: str, http: Http, call: Callable[[], Awaitable[SourceResult]]) -> SourceResult:
-    for attempt in range(CAPTCHA_RETRIES + 1):
+async def _guard(source: str, inn: str, http: Http, call: Callable[[], Awaitable[SourceResult]],
+                 captcha_retries: int = CAPTCHA_RETRIES, timeout: float | None = None) -> SourceResult:
+    for attempt in range(captcha_retries + 1):
         try:
-            return await call()
+            return await asyncio.wait_for(call(), timeout)
+        except asyncio.TimeoutError:
+            log.warning("%s: timeout %ss on %s", source, timeout, inn)
+            return SourceResult(source, inn, ok=False, error="timeout")
         except CaptchaRequired:
             limiter = http.limiters[source]
             limiter.pause(CAPTCHA_COOLDOWN)
             limiter.slow_down()
             log.warning("%s: captcha on %s, cooldown %ss, interval now %.1fs",
                         source, inn, CAPTCHA_COOLDOWN, limiter.interval)
-            if attempt == CAPTCHA_RETRIES:
+            if attempt == captcha_retries:
                 return SourceResult(source, inn, ok=False, error="captcha")
         except Exception as e:  # noqa: BLE001 — источник не должен ронять карточку
             log.warning("%s: %s on %s: %s", source, type(e).__name__, inn, e)
@@ -38,22 +42,25 @@ async def _guard(source: str, inn: str, http: Http, call: Callable[[], Awaitable
     raise AssertionError("unreachable")
 
 
-async def fetch_all(http: Http, inn: str, sources: list[str]) -> list[SourceResult]:
+async def fetch_all(http: Http, inn: str, sources: list[str], *, captcha_retries: int = CAPTCHA_RETRIES,
+                    timeout: float | None = None) -> list[SourceResult]:
+    """Все источники по ИНН. Для онлайн-запроса: captcha_retries=0 и timeout — ответ не ждёт капчу."""
+    kw = {"captcha_retries": captcha_retries, "timeout": timeout}
     tasks: dict[str, asyncio.Task] = {}
 
     async def pb_then_bo() -> None:
         # ГИР БО ищем по id из ПБ, это экономит запрос поиска
-        pb_res = await _guard("pb", inn, http, lambda: pb.fetch(http, inn))
+        pb_res = await _guard("pb", inn, http, lambda: pb.fetch(http, inn), **kw)
         results.append(pb_res)
         if "bo" in sources:
             bo_id = pb_res.context.get("bo_id")
-            results.append(await _guard("bo", inn, http, lambda: bo.fetch(http, inn, bo_id)))
+            results.append(await _guard("bo", inn, http, lambda: bo.fetch(http, inn, bo_id), **kw))
 
     results: list[SourceResult] = []
     plain = {"egrul": egrul.fetch, "rmsp": rmsp.fetch, "rnp": rnp.fetch}
 
     async def run(name: str, fn) -> None:
-        results.append(await _guard(name, inn, http, lambda: fn(http, inn)))
+        results.append(await _guard(name, inn, http, lambda: fn(http, inn), **kw))
 
     coros = [run(n, fn) for n, fn in plain.items() if n in sources]
     if "pb" in sources:
