@@ -62,14 +62,14 @@
 <script>
 const fmt = n => n.toLocaleString("ru-RU");
 const ago = s => s == null ? "—" : s < 60 ? `${s} с назад` : s < 3600 ? `${Math.round(s / 60)} мин назад` : `${(s / 3600).toFixed(1)} ч назад`;
-const eta = m => m == null ? "—" : m < 60 ? `~${m} мин` : `~${Math.floor(m / 60)} ч ${m % 60} мин`;
+const eta = m => m == null ? "—" : m > 2880 ? "более 2 суток" : m < 60 ? `~${m} мин` : `~${Math.floor(m / 60)} ч ${m % 60} мин`;
 const time = iso => new Date(iso).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 
 function card(s) {
   const done = s.remaining === 0;
   const state = done ? ["done", "Готово"] : s.running ? ["run", "Идёт"] : ["stop", "Остановлен"];
-  const finish = !done && s.eta_min != null ? `, закончится около ${time(new Date(Date.now() + s.eta_min * 60000).toISOString())}` : "";
+  const finish = !done && s.eta_min != null && s.eta_min <= 2880 ? `, закончится около ${time(new Date(Date.now() + s.eta_min * 60000).toISOString())}` : "";
   return `<div class="card ${!done && !s.running ? "alert" : ""}">
     <div class="row"><span class="name">${esc(s.name)}</span><span class="pill ${state[0]}">${state[1]}</span></div>
     <div class="bar"><div class="fill ${done ? "done" : ""}" style="width:${s.percent}%"></div></div>

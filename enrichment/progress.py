@@ -59,7 +59,9 @@ def compute(engine) -> dict:
         n_recent, first = recent.get(src, (0, None))
         span_min = max((now - first).total_seconds() / 60, 1.0) if first else 1.0
         per_min = n_recent / span_min
-        if (src in ("egrul", "pb") and not per_min) or (src == "contacts" and not done):
+        # ЕГРЮЛ и ПБ в шаг 5 не входят: показываем, только если по ним реально идёт прогон,
+        # а не единичные запросы из API (меньше 10 записей за 10 минут)
+        if (src in ("egrul", "pb") and n_recent < 10) or (src == "contacts" and not done):
             continue  # в шаг 5 не входят — показываем, только пока их кто-то гоняет
         remaining = max(total - done, 0)
         last_ts = _aware(last.get(src))
