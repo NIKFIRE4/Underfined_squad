@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 
 from functools import lru_cache
 
-from . import history, storage
+from . import history, rnp_dump, storage
 from .card import build_company, links
 from .discovery import classify_role
 from .http import Http
@@ -195,6 +195,14 @@ def _card(inn: str) -> dict | None:
     }
 
 
+RNP_REGISTRY_MAX_AGE_DAYS = 7  # старше — снова спрашиваем ЕИС по ИНН
+
+
+def _rnp_registry_fresh() -> bool:
+    ts = storage.rnp_fetched_at(state["engine"])
+    return ts is not None and (datetime.now(ts.tzinfo) - ts).days < RNP_REGISTRY_MAX_AGE_DAYS
+
+
 @lru_cache(maxsize=1)
 def _reqnums() -> dict:
     """Номера выигранных закупок ЕИС по ИНН — ключ к контракту с контактами. Нет CSV — пусто."""
@@ -216,11 +224,17 @@ async def _enrich(inn: str, refresh: bool) -> dict:
     runs = await asyncio.to_thread(storage.load_runs, state["engine"], inn)
     todo = LIVE_SOURCES if refresh else [s for s in LIVE_SOURCES if s not in runs]
     fetched = []
+    if "rnp" in todo and await asyncio.to_thread(_rnp_registry_fresh):
+        # РНП скачан целиком (rnp-dump) — отвечаем из него мгновенно, без запроса в ЕИС
+        todo.remove("rnp")
+        await asyncio.to_thread(lambda: storage.save_results(
+            state["engine"], rnp_dump.apply_to_suppliers(state["engine"], {inn})))
+        fetched.append("rnp")
     if todo:
         hints = await asyncio.to_thread(_hints, inn) if "contacts" in todo else None
         results = await fetch_all(state["http"], inn, todo, captcha_retries=0, timeout=SOURCE_TIMEOUT, hints=hints)
         await asyncio.to_thread(storage.save_results, state["engine"], results)
-        fetched = [r.source for r in results]
+        fetched += [r.source for r in results]
     card = await asyncio.to_thread(_card, inn)
     if card is None:
         raise HTTPException(404, f"По ИНН {inn} ничего не найдено ни в одном источнике")

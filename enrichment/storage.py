@@ -6,11 +6,12 @@ enrichment_runs — статус каждого источника по ИНН: 
 companies       — плоская витрина для ранкера и UI, собирается из company_facts
 """
 
+from datetime import timezone
 from typing import Any, Iterable
 
 from sqlalchemy import (
     JSON, Boolean, Column, DateTime, Float, Index, Integer, MetaData, String, Table, Text,
-    create_engine, inspect, select, text,
+    create_engine, func, inspect, select, text,
 )
 from sqlalchemy.engine import Engine
 
@@ -302,9 +303,21 @@ def upsert_rnp(engine: Engine, rows: list[dict]) -> None:
 
 def rnp_by_inn(engine: Engine, inns: set[str]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
+    q = select(rnp_registry)
+    if len(inns) <= 1000:  # API по одному ИНН — по индексу; пакет — одним проходом
+        q = q.where(rnp_registry.c.inn.in_(list(inns)))
     with engine.connect() as conn:
-        for r in conn.execute(select(rnp_registry)).mappings():
+        for r in conn.execute(q).mappings():
             if r["inn"] in inns:
                 out.setdefault(r["inn"], []).append(
                     {k: r[k] for k in ("number", "law", "state", "name", "inn", "included", "updated")})
     return out
+
+
+def rnp_fetched_at(engine: Engine):
+    """Когда скачан реестр РНП (rnp-dump); None — не скачивался."""
+    with engine.connect() as conn:
+        ts = conn.execute(select(func.max(rnp_registry.c.fetched_at))).scalar()
+    if ts is not None and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts

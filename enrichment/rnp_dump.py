@@ -75,7 +75,7 @@ async def crawl(http: Http, engine: Engine, start: date = START, end: date | Non
 def apply_to_suppliers(engine: Engine, targets: set[str]) -> list[SourceResult]:
     """Факты rnp для ИНН поставщиков из скачанного реестра (нет записей — значит, не в РНП)."""
     by_inn = storage.rnp_by_inn(engine, targets)
-    ts = now_utc()
+    ts = storage.rnp_fetched_at(engine) or now_utc()  # дата проверки = дата обхода реестра
     out = []
     for inn in targets:
         entries = by_inn.get(inn, [])

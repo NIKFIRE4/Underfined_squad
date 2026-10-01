@@ -529,3 +529,25 @@ def test_rnp_dump(db_url):
     res = {r.inn: facts(r) for r in rnp_dump.apply_to_suppliers(engine, {target, "7804428656"})}
     assert res[target]["rnp_ever"] is True and res[target]["rnp_entries"]
     assert res["7804428656"]["in_rnp"] is False and res["7804428656"]["rnp_ever"] is False
+
+
+def test_api_rnp_from_registry(db_url, monkeypatch):
+    from fastapi.testclient import TestClient
+    from enrichment import api
+    calls = []
+
+    async def fake_fetch_all(http, inn, sources, **kw):
+        calls.append(tuple(sources))
+        r = SourceResult("pb", inn)
+        r.add("status", "Действующая организация", now_utc())
+        return [r]
+
+    monkeypatch.setenv("ENRICHMENT_DB", db_url)
+    monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "_reqnums", lambda: {})
+    with TestClient(api.app) as client:
+        storage.upsert_rnp(api.state["engine"], [{"number": "1", "inn": INN, "state": "Размещено",
+                                                  "law": "44-ФЗ", "fetched_at": now_utc()}])
+        body = client.get(f"/api/suppliers/{INN}").json()
+        assert "rnp" not in calls[0]  # в ЕИС за РНП не ходили
+        assert body["company"]["in_rnp"] is True and "rnp" in body["fetched_now"]
