@@ -16,3 +16,7 @@ venv/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Small synthetic CSV fixtures for the local web service
+!web-service/examples/notices.csv
+!web-service/examples/items.csv
