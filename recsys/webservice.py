@@ -12,6 +12,8 @@
 """
 import math
 import os
+import re
+import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -69,6 +71,78 @@ def lot_to_input(lot):
         'platform': _platform(n, price),
         'customer_inn': _digits(n.get('customer_inn'), (10,)),
         'customer_kpp': _digits(n.get('customer_kpp'), (9,)),
+    }
+
+
+def warmup():
+    """Загрузить модель заранее (сервер вызывает в фоне при старте), чтобы первый запрос не ждал ~6 с."""
+    _recommender().lemm('прогрев')
+
+
+OKPD2_RE = re.compile(r'^\d{2}(\.\d(\d(\.\d(\d(\.\d{3})?)?)?)?)?$')
+
+
+def parse_request(p: dict) -> tuple[dict, int]:
+    """Тело POST /api/recommendations → вход Recommender и top_k. Ошибки — ValueError с понятным текстом."""
+    subject = p.get('subject')
+    if not isinstance(subject, str) or len(subject.strip()) < 3:
+        raise ValueError('subject: укажите предмет закупки (не короче 3 символов)')
+    items = p.get('items') or []
+    if not isinstance(items, list) or len(items) > 5000:
+        raise ValueError('items: ожидается список позиций (не больше 5000)')
+    clean_items = []
+    for i, it in enumerate(items, 1):
+        if not isinstance(it, dict):
+            raise ValueError(f'items[{i}]: ожидается объект {{"name", "okpd2"}}')
+        code = (it.get('okpd2') or '').strip() or None
+        if code and not OKPD2_RE.match(code):
+            raise ValueError(f'items[{i}].okpd2: неверный формат кода ОКПД2 «{code}», пример: 10.61.32.113')
+        clean_items.append({'name': str(it.get('name') or ''), 'okpd2': code})
+    price = p.get('start_price')
+    if price is not None and (_num(price) is None):
+        raise ValueError('start_price: ожидается неотрицательное число')
+    platform = p.get('platform', 'EM')
+    if platform not in ('EM', 'AISGZ'):
+        raise ValueError('platform: EM (Электронный магазин) или AISGZ (АИС ГЗ)')
+    inn, kpp = p.get('customer_inn'), p.get('customer_kpp')
+    if inn not in (None, '') and _digits(inn, (10,)) != str(inn):
+        raise ValueError('customer_inn: 10 цифр')
+    if kpp not in (None, '') and _digits(kpp, (9,)) != str(kpp):
+        raise ValueError('customer_kpp: 9 цифр')
+    top_k = p.get('top_k', 10)
+    if type(top_k) is not int or not 1 <= top_k <= 50:
+        raise ValueError('top_k: целое число от 1 до 50')
+    return {'subject': subject, 'items': clean_items, 'start_price': _num(price) if price is not None else None,
+            'is_smp': bool(p.get('is_smp', False)), 'platform': platform,
+            'customer_inn': inn or None, 'customer_kpp': kpp or None}, top_k
+
+
+def recommend_detailed(payload: dict) -> dict:
+    """POST /api/recommendations: данные новой закупки → топ-K поставщиков со скором, причинами и признаками."""
+    lot, top_k = parse_request(payload)
+    rec = _recommender()
+    t0 = time.time()
+    out = rec.rank(lot, top_n=top_k, n_factors=8)
+    top, n_cands = out['top'], out['n_candidates']
+    items = [] if top.empty else [{
+        'rank': int(r['rank']),
+        'inn': r['inn'],
+        'score': round(100.0 * (1 - (r['rank'] - 1) / max(n_cands, 1)), 1),
+        'p_win': round(float(r['p_win']), 4),
+        'status': r['status'],
+        'status_rule': r['status_rule'],
+        'reasons': r['reasons'],
+        'risks': r['risks'],
+        'factors': r['factors'],
+    } for r in top.to_dict('records')]
+    return {
+        'model_version': f"lgbm-lambdarank-{rec.meta['test_months'][-1]}-it{rec.meta['best_iteration']}",
+        'took_ms': int((time.time() - t0) * 1000),
+        'candidates_considered': n_cands,
+        'lot': {'platform': lot['platform'], 'customer_known': bool(out['batch'].ctx.cid.iloc[0] >= 0),
+                'okpd2_recognized': int(len(out['batch'].keys))},
+        'warnings': out['warnings'],
+        'items': items,
     }
 
 

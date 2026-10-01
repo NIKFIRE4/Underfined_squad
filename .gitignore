@@ -23,3 +23,7 @@ dataset/
 # Артефакты модели ранжирования хранятся в репозитории (через Git LFS)
 !models/**/*.parquet
 !models/*.parquet
+
+# Small synthetic CSV fixtures for the local web service
+!web-service/examples/notices.csv
+!web-service/examples/items.csv
