@@ -10,8 +10,8 @@ def _check(digits: list[int], weights: tuple[int, ...]) -> int:
 
 
 def is_valid_inn(inn: str) -> bool:
-    if not inn.isdigit() or len(inn) not in (10, 12):
-        return False
+    if not inn.isdigit() or len(inn) not in (10, 12) or not inn.strip("0"):
+        return False  # «0000000000» проходит контрольную сумму, но это заглушка из выгрузки
     d = [int(c) for c in inn]
     if len(inn) == 10:
         return _check(d, _W10) == d[9]

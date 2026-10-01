@@ -60,6 +60,7 @@ def test_inn_checksum():
     assert is_valid_inn("636200108061")
     assert not is_valid_inn("7707049389")
     assert not is_valid_inn("123")
+    assert not is_valid_inn("0000000000")  # заглушка из выгрузки проходит контрольную сумму
 
 
 def test_egrul_ul():
