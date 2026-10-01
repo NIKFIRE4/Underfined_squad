@@ -49,7 +49,7 @@ def compute(engine) -> dict:
             storage.company_facts.c.source == "contacts", storage.company_facts.c.field == "contact_emails")).scalar()
         errors = conn.execute(select(runs.c.source, runs.c.inn, runs.c.status, runs.c.error, runs.c.updated_at)
                               .where(runs.c.source.in_(TRACKED), runs.c.status != "ok")
-                              .order_by(runs.c.updated_at.desc()).limit(8)).all()
+                              .order_by(runs.c.updated_at.desc()).limit(30)).all()
 
     sources = []
     for src, name in TRACKED.items():
@@ -77,7 +77,8 @@ def compute(engine) -> dict:
     return {
         "now": now.isoformat(), "total_inns": total, "sources": sources,
         "recent_errors": [{"source": s, "inn": i, "status": st, "error": (e or "")[:200],
-                           "at": _aware(t).isoformat()} for s, i, st, e, t in errors],
+                           "at": _aware(t).isoformat()} for s, i, st, e, t in errors
+                          if s in {x["source"] for x in sources}],
     }
 
 
