@@ -1,0 +1,40 @@
+# Общий стенд. Сейчас: PostgreSQL + обогащение. Сервисы бэкенда, модели и UI добавляются сюда же.
+#
+#   docker compose up -d db
+#   docker compose run --rm enrichment enrich 7707049388 --full
+#   docker compose run --rm enrichment batch --limit 500
+#   docker compose run --rm enrichment stats
+#   docker compose run --rm --entrypoint scripts/enrich_all.sh enrichment   # полный прогон, см. docs/enrichment
+services:
+  db:
+    image: pgvector/pgvector:pg16  # pgvector пригодится индексу эмбеддингов (ТЗ, раздел 7)
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-squad}
+      POSTGRES_USER: ${POSTGRES_USER:-squad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-squad}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  enrichment:
+    build:
+      context: .
+      dockerfile: enrichment/Dockerfile
+    environment:
+      ENRICHMENT_DB: postgresql+psycopg://${POSTGRES_USER:-squad}:${POSTGRES_PASSWORD:-squad}@db:5432/${POSTGRES_DB:-squad}
+    volumes:
+      - ./dataset:/app/dataset:ro  # выгрузка поставщиков и реестры, скачанные вручную
+      - ./data:/app/data           # выгрузки ФНС (~2,5 ГБ), переживают пересоздание контейнера
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]  # запускается через `docker compose run`, не висит постоянно
+
+volumes:
+  pgdata:
