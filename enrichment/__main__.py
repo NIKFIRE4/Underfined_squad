@@ -4,6 +4,7 @@
   python -m enrichment batch --limit 500 --concurrency 6      # пакетный прогон по выгрузке поставщиков
   python -m enrichment show 7707049388                       # карточка из БД с источниками полей
   python -m enrichment stats                                 # прогресс пакетного прогона
+  python -m enrichment fns-download && python -m enrichment fns-load   # массовые выгрузки ФНС
 
 БД: --db (по умолчанию sqlite:///data/enrichment.db) или переменная ENRICHMENT_DB.
 """
@@ -21,7 +22,8 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from . import storage
+from . import fns_dumps, storage
+from .card import build_company
 from .http import Http
 from .inn import is_valid_inn
 from .pipeline import ALL_SOURCES, enrich, rebuild_company
@@ -110,6 +112,28 @@ def cmd_show(args) -> None:
         print(_dump({"company": row, "fields": card}))
 
 
+def cmd_fns_download(args) -> None:
+    for name in args.datasets:
+        fns_dumps.download(fns_dumps.DATASETS[name])
+
+
+def cmd_fns_load(args) -> None:
+    engine = _engine(args.db)
+    targets = set(args.inns or supplier_inns(args.suppliers))
+    for name in args.datasets:
+        t0 = time.monotonic()
+        storage.save_results(engine, fns_dumps.load(fns_dumps.DATASETS[name], targets))
+        log.info("%s: сохранено за %.0f с", name, time.monotonic() - t0)
+    rebuild_all(engine, targets)
+
+
+def rebuild_all(engine, inns: set[str] | None = None) -> None:
+    facts, runs = storage.load_all(engine, inns)
+    rows = [build_company(inn, facts.get(inn, []), runs.get(inn, {}))[0] for inn in runs]
+    storage.save_companies(engine, rows)
+    log.info("витрина companies: пересобрано %d ИНН", len(rows))
+
+
 def cmd_stats(args) -> None:
     engine = _engine(args.db)
     with engine.connect() as conn:
@@ -148,6 +172,15 @@ def main() -> None:
     b.add_argument("--force", action="store_true", help="перезапросить уже обогащённые")
     sources_arg(b)
 
+    datasets = list(fns_dumps.DATASETS)
+    fd = sub.add_parser("fns-download", help="скачать выгрузки ФНС в data/fns")
+    fd.add_argument("--datasets", type=lambda s: s.split(","), default=datasets)
+    fl = sub.add_parser("fns-load", help="загрузить признаки из выгрузок ФНС для ИНН поставщиков")
+    fl.add_argument("inns", nargs="*")
+    fl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    fl.add_argument("--datasets", type=lambda s: s.split(","), default=datasets)
+    sub.add_parser("rebuild", help="пересобрать витрину companies из фактов")
+
     s = sub.add_parser("show")
     s.add_argument("inns", nargs="+")
     sub.add_parser("stats")
@@ -163,6 +196,12 @@ def main() -> None:
         asyncio.run(cmd_batch(args))
     elif args.cmd == "show":
         cmd_show(args)
+    elif args.cmd == "fns-download":
+        cmd_fns_download(args)
+    elif args.cmd == "fns-load":
+        cmd_fns_load(args)
+    elif args.cmd == "rebuild":
+        rebuild_all(_engine(args.db))
     else:
         cmd_stats(args)
 

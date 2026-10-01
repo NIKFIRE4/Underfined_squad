@@ -59,7 +59,7 @@ DEFAULT_INTERVALS = {
     "egrul": 0.5,
     "pb": 0.35,
     "rmsp": 0.3,
-    "bo": 0.3,
+    "bo": 0.5,
     "rnp": 1.0,
 }
 

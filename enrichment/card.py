@@ -8,12 +8,15 @@ from .inn import inn_kind
 from .models import Fact, now_utc
 
 # Чем левее источник, тем выше доверие к его значению поля.
-SOURCE_PRIORITY = ["rmsp", "bo", "pb", "egrul", "rnp"]
+SOURCE_PRIORITY = ["rmsp", "fns_rsmp", "bo", "pb", "fns_sshr2019", "fns_paytax",
+                   "fns_debtam", "fns_taxoffence", "egrul", "rnp"]
 
 # Стартовые пороги, уточняем по распределениям на данных.
 YOUNG_YEARS = 1.0
 REVENUE_DROP = 0.5
 MASS_DIRECTOR_COMPANIES = 5
+TAX_ARREARS_MIN = 1000.0  # как у ФНС в признаке задолженности
+NO_TAXES_REVENUE = 10_000_000  # выручка, при которой нулевые налоги подозрительны
 
 ACTIVE_STATUSES = {"действующая организация", "действующий"}
 
@@ -76,8 +79,13 @@ def risk_flags(c: dict) -> list[dict]:
         add("invalid_info", "В ЕГРЮЛ есть отметка о недостоверности сведений")
     if c.get("is_director_invalid") or c.get("is_founder_invalid"):
         add("invalid_person", "Недостоверные сведения о руководителе или учредителе")
-    if c.get("has_tax_debt"):
+    arrears = c.get("tax_arrears_total")
+    if (arrears or 0) > TAX_ARREARS_MIN:
+        add("tax_debt", f"Недоимка по налогам {arrears:,.0f} ₽".replace(",", " "))
+    elif c.get("has_tax_debt"):
         add("tax_debt", "Задолженность по налогам более 1000 ₽")
+    if c.get("taxes_paid") == 0 and (c.get("revenue") or 0) > NO_TAXES_REVENUE:
+        add("no_taxes", "Нулевые уплаченные налоги при выручке более 10 млн ₽")
     if c.get("no_tax_reporting"):
         add("no_reporting", "Не сдаёт налоговую отчётность более года")
     if c.get("is_mass_address"):

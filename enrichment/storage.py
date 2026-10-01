@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 from sqlalchemy import (
     JSON, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text,
-    create_engine, select,
+    create_engine, inspect, select, text,
 )
 from sqlalchemy.engine import Engine
 
@@ -79,6 +79,8 @@ companies = Table(
     Column("finance_year", Integer),
     Column("revenue_tax", Float),
     Column("taxes_paid", Float),
+    Column("tax_arrears_total", Float),
+    Column("tax_fines_total", Float),
     Column("has_tax_debt", Boolean),
     Column("no_tax_reporting", Boolean),
     Column("is_invalid_info", Boolean),
@@ -97,7 +99,20 @@ companies = Table(
 def connect(url: str) -> Engine:
     engine = create_engine(url, future=True)
     metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Мини-миграция для хакатона: новые колонки витрины добавляются к существующей таблице."""
+    insp = inspect(engine)
+    for table in metadata.sorted_tables:
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name not in have:
+                ddl = col.type.compile(dialect=engine.dialect)
+                with engine.begin() as conn:
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl}'))
 
 
 def _upsert(engine: Engine, table: Table, rows: list[dict], keys: list[str]) -> None:
@@ -125,14 +140,31 @@ def save_results(engine: Engine, results: Iterable[SourceResult]) -> None:
     if raws:
         with engine.begin() as conn:
             conn.execute(raw_responses.insert(), raws)
-    _upsert(engine, company_facts, list(facts.values()), ["inn", "field", "source"])
-    _upsert(engine, enrichment_runs, runs, ["inn", "source"])
+    facts_rows = list(facts.values())
+    for i in range(0, len(facts_rows), 5000):
+        _upsert(engine, company_facts, facts_rows[i : i + 5000], ["inn", "field", "source"])
+    for i in range(0, len(runs), 5000):
+        _upsert(engine, enrichment_runs, runs[i : i + 5000], ["inn", "source"])
 
 
 def load_facts(engine: Engine, inn: str) -> list[Fact]:
     with engine.connect() as conn:
         rows = conn.execute(select(company_facts).where(company_facts.c.inn == inn)).mappings()
         return [Fact(**r) for r in rows]
+
+
+def load_all(engine: Engine, inns: set[str] | None = None) -> tuple[dict, dict]:
+    """Все факты и статусы источников одним проходом: для пересборки витрины по 44 тыс. ИНН."""
+    facts: dict[str, list[Fact]] = {}
+    runs: dict[str, dict[str, str]] = {}
+    with engine.connect() as conn:
+        for r in conn.execute(select(company_facts)).mappings():
+            if inns is None or r["inn"] in inns:
+                facts.setdefault(r["inn"], []).append(Fact(**r))
+        for r in conn.execute(select(enrichment_runs)).mappings():
+            if inns is None or r["inn"] in inns:
+                runs.setdefault(r["inn"], {})[r["source"]] = r["status"]
+    return facts, runs
 
 
 def load_runs(engine: Engine, inn: str) -> dict[str, str]:
@@ -155,9 +187,15 @@ def done_inns(engine: Engine, sources: list[str]) -> set[str]:
     return {inn for inn, s in by_inn.items() if need <= s}
 
 
-def save_company(engine: Engine, row: dict[str, Any]) -> None:
+def save_companies(engine: Engine, rows: list[dict[str, Any]], chunk: int = 2000) -> None:
     cols = {c.name for c in companies.columns}
-    _upsert(engine, companies, [{k: v for k, v in row.items() if k in cols}], ["inn"])
+    rows = [{k: r.get(k) for k in cols} for r in rows]
+    for i in range(0, len(rows), chunk):
+        _upsert(engine, companies, rows[i : i + chunk], ["inn"])
+
+
+def save_company(engine: Engine, row: dict[str, Any]) -> None:
+    save_companies(engine, [row])
 
 
 def get_company(engine: Engine, inn: str) -> dict | None:
