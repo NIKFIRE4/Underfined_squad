@@ -124,10 +124,12 @@ def test_bo_finance_in_rubles():
 
 def test_bo_search_gives_okved():
     http = FakeHttp({"advanced-search": {"content": [{"id": 6530703, "inn": "<strong>7605016030</strong>",
-                                                      "shortName": "ООО ТЕНЗОР", "okved2": "62.01"}]},
+                                                      "shortName": "ООО ТЕНЗОР", "okved2": "62.01",
+                                                      "statusCode": "ACTIVE", "statusDate": "2002-10-04"}]},
                      "/bfo/": []})
     f = facts(run(bo.fetch(http, "7605016030")))
     assert f["okved_main"] == "62.01" and f["bo_id"] == "6530703" and f["bfo_found"] is False
+    assert f["status"] == "Действующая организация" and f["is_liquidated"] is False
 
 
 def test_bo_hidden_reporting():
@@ -401,11 +403,18 @@ def test_api_supplier(db_url, monkeypatch):
         pb_res.add("name_short", "ООО ТЕСТ", ts)
         bo_res = SourceResult("bo", inn)
         bo_res.add("revenue", 5_000_000.0, ts)
-        return [pb_res, bo_res] + [SourceResult(s, inn, ok=False, error="captcha")
-                                    for s in sources if s not in ("pb", "bo")]
+        bo_res.add("bo_id", "4436757", ts)
+        ct = SourceResult("contacts", inn)
+        ct.add("contacts_found", True, ts)
+        ct.add("contact_phones", ["+78123271380"], ts)
+        ct.add("contact_emails", ["do@example.ru"], ts)
+        ct.add("contact_contract_url", "https://zakupki.gov.ru/epz/contract/contractCard/common-info.html?reestrNumber=1", ts)
+        return [pb_res, bo_res, ct] + [SourceResult(s, inn, ok=False, error="captcha")
+                                        for s in sources if s not in ("pb", "bo", "contacts")]
 
     monkeypatch.setenv("ENRICHMENT_DB", db_url)
     monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "_reqnums", lambda: {INN: ["0172200004925000426"]})
     with TestClient(api.app) as client:
         r = client.get(f"/api/suppliers/{INN}")
         assert r.status_code == 200
@@ -415,7 +424,12 @@ def test_api_supplier(db_url, monkeypatch):
         assert body["role"]["value"] == "distributor"
         assert body["fields"]["revenue"]["source"] == "bo"
         assert {s["source"]: s["status"] for s in body["sources_status"]}["rnp"] == "captcha"
-        assert calls[0][2] == {"captcha_retries": 0, "timeout": api.SOURCE_TIMEOUT}
+        assert calls[0][2] == {"captcha_retries": 0, "timeout": api.SOURCE_TIMEOUT,
+                               "hints": {"reqnums": ["0172200004925000426"], "name": None}}
+        assert body["contacts"]["phones"] == ["+78123271380"] and body["contacts"]["found"] is True
+        kinds = {l["title"]: l["kind"] for l in body["links"]}
+        assert kinds["Контракт ЕИС с контактами поставщика"] == "contact"
+        assert any("organizations-card/4436757" in l["url"] for l in body["links"])
 
         # повторный запрос — из базы, без похода в интернет
         r2 = client.get(f"/api/suppliers/{INN}").json()
@@ -441,3 +455,77 @@ def test_age_from_ogrn():
     exact, _ = card.build_company("7804428656", [_fact("ogrn", "1099847036750", "fns_rsmp"),
                                                 _fact("reg_date", "2009-12-22", "egrul")], {"egrul": "ok"})
     assert exact["age_source"] == "reg_date"  # точная дата приоритетнее оценки
+
+
+def test_progress(db_url):
+    from enrichment import progress
+    engine = storage.connect(db_url)
+    storage.save_results(engine, [SourceResult("fns_rsmp", i) for i in ("7804428656", "7814778459", "7707049388")]
+                         + [SourceResult("bo", "7804428656"), SourceResult("bo", "7814778459", ok=False, error="boom")])
+    d = progress.compute(engine)
+    bo = next(s for s in d["sources"] if s["source"] == "bo")
+    assert d["total_inns"] == 3 and bo["done"] == 2 and bo["remaining"] == 1 and bo["error"] == 1
+    assert bo["running"] and bo["per_min"] > 0 and bo["eta_min"] is not None
+    assert [s["source"] for s in d["sources"]] == ["bo", "rnp"]  # rnp с 0% виден, egrul/pb вне шага 5 скрыты
+    assert d["recent_errors"][0]["inn"] == "7814778459"
+
+
+def test_contacts_parse_and_fetch():
+    from enrichment.sources import contacts
+    html = (FX / "eis_participants.html").read_text(encoding="utf-8")
+    p = contacts.parse_participants(html)[0]
+    assert p["inn"] == "7813037232" and p["phones"] == ["+78123271380"] and p["emails"] == ["do@zaoff.spb.ru"]
+    assert contacts._phones("8(812)327-13-80, +7 921 000 11 22") == ["+78123271380", "+79210001122"]
+    assert contacts.search_name('ООО "БРАСС"') == "БРАСС"
+    search = '<a href="/epz/contract/contractCard/common-info.html?reestrNumber=2781409670624000014">'
+    http = FakeHttp({"search/results": search, "participants": html})
+    f = facts(run(contacts.fetch(http, "7813037232", ["0172200004923000344"], None)))
+    assert f["contacts_found"] and f["contact_emails"] == ["do@zaoff.spb.ru"]
+    assert f["contact_found_by"] == "закупка 0172200004923000344"
+    # чужой ИНН в карточке — контакты не берём
+    f2 = facts(run(contacts.fetch(http, "7804428656", ["0172200004923000344"], None)))
+    assert f2 == {"contacts_found": False}
+
+
+def test_rate_limited_pauses_and_retries(monkeypatch):
+    from enrichment import pipeline
+    from enrichment.http import Http, RateLimited
+    http = Http()
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) == 1:  # как Http.request: 429 замедляет свой эндпоинт и бросает исключение
+            http.limiters["contacts_card"].slow_down()
+            raise RateLimited("contacts_card")
+        return SourceResult("contacts", INN)
+
+    search_before = http.limiters["contacts"].interval
+    card_before = http.limiters["contacts_card"].interval
+    res = run(pipeline._guard("contacts", INN, http, flaky))
+    assert res.ok and len(calls) == 2  # повтор после паузы
+    assert http.limiters["contacts_card"].interval > card_before  # замедлен только эндпоинт с 429
+    assert http.limiters["contacts"].interval == search_before
+    run(http.aclose())
+
+
+def test_rnp_dump(db_url):
+    from datetime import date as _d
+    from enrichment import rnp_dump
+    html = (FX / "rnp_search.html").read_text(encoding="utf-8")
+    pages = []
+
+    class PagedHttp:
+        async def request(self, source, method, url, params=None, **kw):
+            pages.append(params)
+            return httpx.Response(200, text=html if params["pageNumber"] == 1 else "<html></html>")
+
+    engine = storage.connect(db_url)
+    n = run(rnp_dump.crawl(PagedHttp(), engine, _d(2025, 1, 1), _d(2025, 2, 15)))
+    entries = rnp.parse_entries(html)
+    assert n == 2 * len(entries)  # два месяца, на каждом одна страница (меньше 50 — стоп)
+    assert {p["inclusionDateFrom"] for p in pages} == {"01.01.2025", "01.02.2025"}
+    target = entries[0]["inn"]
+    res = {r.inn: facts(r) for r in rnp_dump.apply_to_suppliers(engine, {target, "7804428656"})}
+    assert res[target]["rnp_ever"] is True and res[target]["rnp_entries"]
+    assert res["7804428656"]["in_rnp"] is False and res["7804428656"]["rnp_ever"] is False

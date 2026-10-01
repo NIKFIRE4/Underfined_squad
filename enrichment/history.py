@@ -68,3 +68,13 @@ def load(targets: set[str] | None = None, suppliers: str = SUPPLIERS) -> list[So
         out.append(res)
     log.info("история: %d поставщиков", len(out))
     return out
+
+
+def won_reqnums(suppliers: str = SUPPLIERS, notices: str = NOTICES) -> dict[str, list[str]]:
+    """ИНН → номера закупок ЕИС (reqnum) выигранных лотов, свежие первыми: ключ для поиска контракта."""
+    sup = _read(suppliers, ["lot_id", "supplier_inn", "is_winner"]).filter(pl.col("is_winner") == "true")
+    notes = _read(notices, ["lot_id", "reqnum", "publish_date"]).filter(pl.col("reqnum").str.len_chars() > 5)
+    df = (sup.join(notes, on="lot_id").sort("publish_date", descending=True)
+          .group_by("supplier_inn", maintain_order=True).agg(pl.col("reqnum").unique(maintain_order=True).head(5))
+          .collect())
+    return {r["supplier_inn"].strip(): r["reqnum"] for r in df.iter_rows(named=True)}

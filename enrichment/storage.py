@@ -130,6 +130,19 @@ pool_codes = Table(
     Index("ix_pool_codes_code", "code"),
 )
 
+# Реестр недобросовестных поставщиков целиком (rnp-dump): запись = номер реестровой записи
+rnp_registry = Table(
+    "rnp_registry", metadata,
+    Column("number", Text, primary_key=True),
+    Column("inn", Text, index=True),
+    Column("name", Text),
+    Column("law", Text),
+    Column("state", Text),
+    Column("included", Text),
+    Column("updated", Text),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+
 # Позиции реестров производителей и правообладателей по ОКПД2 (РРПП, реестр ПО)
 registry_items = Table(
     "registry_items", metadata,
@@ -279,3 +292,19 @@ def replace_registry(engine: Engine, registry: str, items: list[dict], chunk: in
     for i in range(0, len(items), chunk):
         with engine.begin() as conn:
             conn.execute(registry_items.insert(), items[i : i + chunk])
+
+
+def upsert_rnp(engine: Engine, rows: list[dict]) -> None:
+    rows = list({r["number"]: r for r in rows}.values())
+    cols = {c.name for c in rnp_registry.columns}
+    _upsert(engine, rnp_registry, [{k: r.get(k) for k in cols} for r in rows], ["number"])
+
+
+def rnp_by_inn(engine: Engine, inns: set[str]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    with engine.connect() as conn:
+        for r in conn.execute(select(rnp_registry)).mappings():
+            if r["inn"] in inns:
+                out.setdefault(r["inn"], []).append(
+                    {k: r[k] for k in ("number", "law", "state", "name", "inn", "included", "updated")})
+    return out

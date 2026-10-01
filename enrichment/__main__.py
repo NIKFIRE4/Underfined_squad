@@ -22,8 +22,9 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from . import discovery, fns_dumps, history, registries, storage
+from . import discovery, fns_dumps, history, registries, rnp_dump, storage
 from .card import build_company
+from .card import links as card_links
 from .http import Http
 from .inn import is_valid_inn
 from .pipeline import ALL_SOURCES, enrich, rebuild_company
@@ -75,9 +76,23 @@ async def cmd_batch(args) -> None:
     if not args.force:
         done = storage.done_inns(engine, args.sources)
         inns = [i for i in inns if i not in done]
+    if "bo" in args.sources:
+        # у ИП в ГИР БО отчётности нет — сначала юрлица, ИП в конце (порядок внутри групп сохраняется)
+        inns.sort(key=lambda i: len(i) == 12)
     if args.limit:
         inns = inns[: args.limit]
     log.info("batch: %d INN, sources=%s, concurrency=%d", len(inns), args.sources, args.concurrency)
+
+    reqnums, names = {}, {}
+    if "contacts" in args.sources:  # подсказки для поиска контракта: номера закупок и название
+        reqnums = history.won_reqnums(args.suppliers)
+        with engine.connect() as conn:
+            names = {i: n1 or n2 for i, n1, n2 in conn.execute(
+                select(storage.companies.c.inn, storage.companies.c.name_short, storage.companies.c.name_full))}
+        log.info("contacts: номера закупок для %d ИНН, названия для %d", len(reqnums), len(names))
+        inns.sort(key=lambda i: i not in reqnums)  # стабильно: внутри групп порядок по активности
+        if not args.contacts_by_name:  # без номера закупки и без поиска по названию искать нечем
+            inns = [i for i in inns if i in reqnums]
 
     queue: asyncio.Queue[str] = asyncio.Queue()
     for i in inns:
@@ -92,7 +107,9 @@ async def cmd_batch(args) -> None:
             except asyncio.QueueEmpty:
                 return
             try:
-                row = await enrich(http, engine, inn, args.sources)
+                hints = {"reqnums": reqnums.get(inn),
+                         "name": names.get(inn) if args.contacts_by_name else None}
+                row = await enrich(http, engine, inn, args.sources, hints)
                 stats[row["enrichment_status"]] += 1
             except Exception as e:  # noqa: BLE001
                 stats["crash"] += 1
@@ -164,6 +181,23 @@ def cmd_discover(args) -> None:
     log.info("найдено %d новых компаний", len(found))
 
 
+async def cmd_rnp_dump(args) -> None:
+    engine, http = _engine(args.db), Http()
+    try:
+        t0 = time.monotonic()
+        n = await rnp_dump.crawl(http, engine)
+        log.info("РНП: скачано %d записей за %.0f мин", n, (time.monotonic() - t0) / 60)
+    finally:
+        await http.aclose()
+    targets = set(supplier_inns(args.suppliers))
+    results = rnp_dump.apply_to_suppliers(engine, targets)
+    storage.save_results(engine, results)
+    log.info("РНП: в реестре сейчас %d поставщиков, были когда-либо — %d",
+             sum(1 for r in results if any(f.field == "in_rnp" and f.value for f in r.facts)),
+             sum(1 for r in results if any(f.field == "rnp_ever" and f.value for f in r.facts)))
+    rebuild_all(engine, targets)
+
+
 def cmd_history_load(args) -> None:
     engine = _engine(args.db)
     results = history.load(suppliers=args.suppliers)
@@ -173,7 +207,9 @@ def cmd_history_load(args) -> None:
 
 EXPORT_EXTRA = ["okved_main_name", "reg_year", "smp_since", "employees_as_of", "taxes_paid_as_of", "revenue_tax",
                 "hist_lots", "hist_wins", "hist_customers", "hist_okpd2_codes", "hist_okpd2_classes",
-                "hist_last_date", "hist_class_codes", "finance_by_year"]
+                "hist_last_date", "hist_class_codes", "finance_by_year",
+                "contacts_found", "contact_phones", "contact_emails", "contact_postal_address",
+                "contact_contract_url", "website", "links"]
 
 
 def _csv_value(v):
@@ -196,6 +232,7 @@ def cmd_export_csv(args) -> None:
     for inn in sorted(i for i in facts if is_valid_inn(i)):
         row, card = build_company(inn, facts[inn], runs.get(inn, {}))
         full = row | {k: v["value"] for k, v in card.items() if k not in row}
+        full["links"] = card_links(inn, full)
         role = discovery.classify_role(full)
         full |= {"role": role["value"], "role_label": role["label"], "role_confidence": role["confidence"],
                  "role_evidence": " | ".join(role["evidence"]),
@@ -288,6 +325,8 @@ def main() -> None:
     b.add_argument("--limit", type=int)
     b.add_argument("--concurrency", type=int, default=6)
     b.add_argument("--force", action="store_true", help="перезапросить уже обогащённые")
+    b.add_argument("--contacts-by-name", action="store_true",
+                   help="контакты: искать контракт и по названию (4 запроса на ИНН, находит редко)")
     b.add_argument("--missing-status", action="store_true",
                    help="только ИНН, у которых статус «действующая» неизвестен (для --sources egrul)")
     sources_arg(b)
@@ -304,6 +343,8 @@ def main() -> None:
     rl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     rl.add_argument("--gisp", help=f"по умолчанию {registries.GISP_PATH}")
     rl.add_argument("--software", help=f"по умолчанию {registries.SOFTWARE_GLOB}")
+    rd = sub.add_parser("rnp-dump", help="РНП целиком (~40 мин) вместо запроса по каждому ИНН (~11 ч)")
+    rd.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     hl = sub.add_parser("history-load", help="признаки из истории закупок (роль «дистрибьютор»)")
     hl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     dc = sub.add_parser("discover", help="новые компании по ОКПД2 лота (ФТ-06)")
@@ -339,6 +380,8 @@ def main() -> None:
         cmd_fns_load(args)
     elif args.cmd == "registries-load":
         cmd_registries_load(args)
+    elif args.cmd == "rnp-dump":
+        asyncio.run(cmd_rnp_dump(args))
     elif args.cmd == "history-load":
         cmd_history_load(args)
     elif args.cmd == "discover":

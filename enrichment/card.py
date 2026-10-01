@@ -1,6 +1,7 @@
 """Сборка карточки компании из фактов: выбор значения по приоритету источников,
 расхождения между источниками и флаги «Требует проверки» (ТЗ, раздел 6.5)."""
 
+import re
 from datetime import date
 from typing import Any
 
@@ -9,7 +10,7 @@ from .models import Fact, now_utc
 
 # Чем левее источник, тем выше доверие к его значению поля.
 SOURCE_PRIORITY = ["rmsp", "fns_rsmp", "bo", "pb", "fns_sshr2019", "fns_paytax",
-                   "fns_debtam", "fns_taxoffence", "reg_gisp", "reg_software", "history", "egrul", "rnp"]
+                   "fns_debtam", "fns_taxoffence", "reg_gisp", "reg_software", "history", "egrul", "rnp", "contacts"]
 
 # Стартовые пороги, уточняем по распределениям на данных.
 YOUNG_YEARS = 1.0
@@ -71,6 +72,31 @@ def _prev_tax_revenue(by_year: dict | None, last_year: Any) -> float | None:
     if not by_year or last_year is None:
         return None
     return (by_year.get(str(int(last_year) - 1)) or {}).get("revenue")
+
+
+def links(inn: str, c: dict) -> list[dict]:
+    """Ссылки на компанию на площадках-источниках и каналы связи: [{title, url, kind}]."""
+    from urllib.parse import quote
+    out = []
+
+    def add(title, url, kind):
+        out.append({"title": title, "url": url, "kind": kind})
+
+    if c.get("website"):
+        site = c["website"] if str(c["website"]).startswith("http") else f"https://{c['website']}"
+        add("Сайт компании (из реестра ПО)", site, "contact")
+    if c.get("contact_contract_url"):
+        add("Контракт ЕИС с контактами поставщика", c["contact_contract_url"], "contact")
+    name = c.get("name_short") or c.get("name_full")
+    if name:
+        q = quote(re.sub(r'^(ООО|АО|ПАО|ЗАО|ИП)\s+|"', " ", name).strip())
+        add("Контракты поставщика в ЕИС", f"https://zakupki.gov.ru/epz/contract/search/results.html?supplierTitle={q}&fz44=on", "profile")
+    if c.get("bo_id"):
+        add("Бухотчётность (ГИР БО)", f"https://bo.nalog.gov.ru/organizations-card/{c['bo_id']}", "profile")
+    add("Реестр МСП", f"https://rmsp.nalog.ru/search.html?query={inn}", "profile")
+    add("ФНС «Прозрачный бизнес»", f"https://pb.nalog.ru/search.html#quick-result?queryAll={inn}", "profile")
+    add("Реестр недобросовестных поставщиков", f"https://zakupki.gov.ru/epz/dishonestsupplier/search/results.html?searchString={inn}", "check")
+    return out
 
 
 def risk_flags(c: dict) -> list[dict]:
