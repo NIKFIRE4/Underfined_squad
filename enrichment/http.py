@@ -31,7 +31,15 @@ class RetryableStatus(SourceError):
 
 
 class RateLimited(CaptchaRequired):
-    """HTTP 429: источник просит снизить частоту — обрабатываем как капчу (пауза + замедление)."""
+    """HTTP 429: эндпоинт просит снизить частоту. Его лимитер уже поставлен на паузу и замедлен
+    в Http.request — вызывающему остаётся только повторить."""
+
+    def __init__(self, limiter_key: str):
+        super().__init__(f"{limiter_key}: HTTP 429")
+        self.limiter_key = limiter_key
+
+
+RATE_LIMIT_COOLDOWN = 150  # секунд паузы эндпоинта после 429
 
 
 class RateLimiter:
@@ -65,7 +73,8 @@ DEFAULT_INTERVALS = {
     "rmsp": 0.3,
     "bo": 0.5,
     "rnp": 1.0,
-    "contacts": 2.0,  # поиск контрактов ЕИС отвечает 429 уже при ~1,4 запроса/с — медленнее, чем РНП
+    "contacts": 1.5,       # поиск контрактов ЕИС: 429 уже при ~1,4 запроса/с суммарно с РНП
+    "contacts_card": 0.5,  # таблица участников контракта: лимит мягче, отдельный лимитер
 }
 
 
@@ -89,7 +98,8 @@ class Http:
         )
 
     async def request(
-        self, source: str, method: str, url: str, *, insecure: bool = False, **kw: Any
+        self, source: str, method: str, url: str, *, insecure: bool = False,
+        limiter_key: str | None = None, **kw: Any
     ) -> httpx.Response:
         client = self.client_noverify if insecure else self.client
         async for attempt in AsyncRetrying(
@@ -99,10 +109,13 @@ class Http:
             reraise=True,
         ):
             with attempt:
-                await self.limiters[source].wait()
+                limiter = self.limiters[limiter_key or source]
+                await limiter.wait()
                 r = await client.request(method, url, **kw)
                 if r.status_code == 429:
-                    raise RateLimited(f"{source}: HTTP 429")
+                    limiter.pause(RATE_LIMIT_COOLDOWN)
+                    limiter.slow_down()
+                    raise RateLimited(limiter_key or source)
                 if r.status_code >= 500:
                     raise RetryableStatus(f"{source}: HTTP {r.status_code}")
                 return r

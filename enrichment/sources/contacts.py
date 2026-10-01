@@ -90,7 +90,7 @@ async def fetch(http: Http, inn: str, reqnums: list[str] | None = None, name: st
             continue
         seen.add(number)
         r = await http.request(SOURCE, "GET", f"{BASE}/contractCard/participants.html", insecure=True,
-                               params={"reestrNumber": number})
+                               limiter_key="contacts_card", params={"reestrNumber": number})
         mine = [p for p in parse_participants(r.text) if p["inn"] == inn]
         if not mine:
             continue

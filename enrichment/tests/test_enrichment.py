@@ -495,12 +495,15 @@ def test_rate_limited_pauses_and_retries(monkeypatch):
 
     async def flaky():
         calls.append(1)
-        if len(calls) == 1:
-            raise RateLimited("contacts: HTTP 429")
+        if len(calls) == 1:  # как Http.request: 429 замедляет свой эндпоинт и бросает исключение
+            http.limiters["contacts_card"].slow_down()
+            raise RateLimited("contacts_card")
         return SourceResult("contacts", INN)
 
-    before = http.limiters["contacts"].interval
+    search_before = http.limiters["contacts"].interval
+    card_before = http.limiters["contacts_card"].interval
     res = run(pipeline._guard("contacts", INN, http, flaky))
     assert res.ok and len(calls) == 2  # повтор после паузы
-    assert http.limiters["contacts"].interval > before  # и замедление
+    assert http.limiters["contacts_card"].interval > card_before  # замедлен только эндпоинт с 429
+    assert http.limiters["contacts"].interval == search_before
     run(http.aclose())

@@ -59,16 +59,21 @@ def compute(engine) -> dict:
         n_recent, first = recent.get(src, (0, None))
         span_min = max((now - first).total_seconds() / 60, 1.0) if first else 1.0
         per_min = n_recent / span_min
+        # ночной прогон контактов идёт только по ИНН с номером закупки ЕИС — считаем от них
+        target = total
+        if src == "contacts":
+            from .api import _reqnums
+            target = len(_reqnums()) or total
         # ЕГРЮЛ и ПБ в шаг 5 не входят: показываем, только если по ним реально идёт прогон,
         # а не единичные запросы из API (меньше 10 записей за 10 минут)
         if (src in ("egrul", "pb") and n_recent < 10) or (src == "contacts" and not done):
             continue  # в шаг 5 не входят — показываем, только пока их кто-то гоняет
-        remaining = max(total - done, 0)
+        remaining = max(target - done, 0)
         last_ts = _aware(last.get(src))
         sources.append({
-            "source": src, "name": name, "total": total, "done": done, "remaining": remaining,
+            "source": src, "name": name, "total": target, "done": done, "remaining": remaining,
             "ok": counts.get("ok", 0), "error": counts.get("error", 0), "captcha": counts.get("captcha", 0),
-            "percent": round(done / total * 100, 1) if total else 0.0,
+            "percent": round(min(done / target, 1) * 100, 1) if target else 0.0,
             "per_min": round(per_min, 1),
             "eta_min": round(remaining / per_min) if per_min else None,
             "last_at": last_ts.isoformat() if last_ts else None,

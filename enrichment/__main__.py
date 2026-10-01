@@ -88,6 +88,8 @@ async def cmd_batch(args) -> None:
                 select(storage.companies.c.inn, storage.companies.c.name_short, storage.companies.c.name_full))}
         log.info("contacts: номера закупок для %d ИНН, названия для %d", len(reqnums), len(names))
         inns.sort(key=lambda i: i not in reqnums)  # стабильно: внутри групп порядок по активности
+        if not args.contacts_by_name:  # без номера закупки и без поиска по названию искать нечем
+            inns = [i for i in inns if i in reqnums]
 
     queue: asyncio.Queue[str] = asyncio.Queue()
     for i in inns:
@@ -102,7 +104,8 @@ async def cmd_batch(args) -> None:
             except asyncio.QueueEmpty:
                 return
             try:
-                hints = {"reqnums": reqnums.get(inn), "name": names.get(inn)}
+                hints = {"reqnums": reqnums.get(inn),
+                         "name": names.get(inn) if args.contacts_by_name else None}
                 row = await enrich(http, engine, inn, args.sources, hints)
                 stats[row["enrichment_status"]] += 1
             except Exception as e:  # noqa: BLE001
@@ -302,6 +305,8 @@ def main() -> None:
     b.add_argument("--limit", type=int)
     b.add_argument("--concurrency", type=int, default=6)
     b.add_argument("--force", action="store_true", help="перезапросить уже обогащённые")
+    b.add_argument("--contacts-by-name", action="store_true",
+                   help="контакты: искать контракт и по названию (4 запроса на ИНН, находит редко)")
     b.add_argument("--missing-status", action="store_true",
                    help="только ИНН, у которых статус «действующая» неизвестен (для --sources egrul)")
     sources_arg(b)

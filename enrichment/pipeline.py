@@ -8,7 +8,7 @@ from sqlalchemy.engine import Engine
 
 from . import storage
 from .card import build_company
-from .http import CaptchaRequired, Http
+from .http import CaptchaRequired, Http, RateLimited
 from .inn import is_valid_inn
 from .models import SourceResult
 from .sources import bo, contacts, egrul, pb, rmsp, rnp
@@ -29,9 +29,10 @@ async def _guard(source: str, inn: str, http: Http, call: Callable[[], Awaitable
             log.warning("%s: timeout %ss on %s", source, timeout, inn)
             return SourceResult(source, inn, ok=False, error="timeout")
         except CaptchaRequired as e:  # и RateLimited (HTTP 429)
-            limiter = http.limiters[source]
-            limiter.pause(CAPTCHA_COOLDOWN)
-            limiter.slow_down()
+            limiter = http.limiters[getattr(e, "limiter_key", source)]
+            if not isinstance(e, RateLimited):  # для 429 пауза уже выставлена в Http.request
+                limiter.pause(CAPTCHA_COOLDOWN)
+                limiter.slow_down()
             log.warning("%s: %s on %s, cooldown %ss, interval now %.1fs",
                         source, e, inn, CAPTCHA_COOLDOWN, limiter.interval)
             if attempt == captcha_retries:
