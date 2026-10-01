@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from pipeline import run_pipeline
-from integrations import recommender, enricher
+from integrations import recommender, enricher, analysis
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("DATA_DIR", str(ROOT / "data"))).resolve()
@@ -69,9 +69,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def body_json(self, max_size=16384):
         size = int(self.headers.get("Content-Length", "0"))
-        if not 0 < size <= max_size:
+        if self.headers.get("Transfer-Encoding") or not 0 < size <= max_size:
             raise ValueError("Некорректный размер запроса")
-        data = json.loads(self.rfile.read(size))
+        data = json.loads(self.rfile.read(size), parse_constant=analysis.reject_constant)
         if not isinstance(data, dict):
             raise ValueError("Ожидается JSON-объект")
         return data
@@ -105,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
             name, mime = static[route]
             self.serve_file(ROOT / "web" / name, mime)
         elif route == "/api/health":
-            self.reply(200, {"status": "ok", "mode": MODE, "recommender_ready": recommender.READY, "enricher_ready": enricher.READY, "max_file_bytes": MAX_FILE})
+            self.reply(200, {"status": "ok", "mode": MODE, "recommender_ready": recommender.READY, "enricher_ready": enricher.READY, "max_file_bytes": MAX_FILE, "analyze_configured": analysis.configured()})
         elif route in ("/api/examples/notices", "/api/examples/items"):
             name = "notices.csv" if route.endswith("notices") else "items.csv"
             self.serve_file(ROOT / "examples" / name, "text/csv; charset=utf-8", name)
@@ -147,6 +147,21 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.reply(200, result)
                 return
+            if route in ("/analyze", "/api/analyze"):
+                if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                    self.close_connection = True
+                    self.reply(415, {"error": "Передайте поля модели как application/json"})
+                    return
+                if int(self.headers.get("Content-Length", "0")) > 1024 * 1024:
+                    self.close_connection = True
+                    self.reply(413, {"error": "JSON-запрос не должен превышать 1 МБ"})
+                    return
+                self.connection.settimeout(30)
+                payload = self.body_json(max_size=1024 * 1024)
+                if not payload:
+                    raise ValueError("Передайте непустой JSON-объект с полями модели")
+                self.reply(200, analysis.analyze(payload, self.server.server_port))
+                return
             if route == "/api/jobs":
                 payload = self.body_json()
                 top_k = payload.get("top_k", 10)
@@ -178,7 +193,12 @@ class Handler(BaseHTTPRequestHandler):
                 update_job(job_id, status="queued", message="Начинаем обработку…")
                 POOL.submit(worker, job_id)
             self.reply(202, {"id": job_id})
-        except (ValueError, KeyError) as exc:
+        except analysis.AnalysisError as exc:
+            self.reply(exc.status, {"error": str(exc)})
+        except TimeoutError:
+            self.close_connection = True
+            self.reply(408, {"error": "Истекло время чтения запроса"})
+        except (ValueError, KeyError, RecursionError) as exc:
             self.close_connection = True
             self.reply(400, {"error": str(exc)})
 

@@ -59,6 +59,8 @@ python3 server.py
 
 Согласованный интерфейс описан в [INTEGRATION.md](INTEGRATION.md).
 
+Для отдельно запущенного HTTP-сервиса модели доступен `POST /analyze`: [настройка адреса и пример запроса](ANALYZE.md). Он принимает подготовленные поля в JSON и возвращает ответ модели. Подключение этого endpoint к CSV-сценарию и PostgreSQL требует согласованной схемы данных.
+
 - `integrations/recommender.py` — локальная модель и исторический индекс поставщиков.
 - `integrations/enricher.py` — поиск новых компаний и обогащение.
 - `models.py` — общие структуры `Lot` и `Candidate`.

@@ -32,7 +32,8 @@ class ApiTests(unittest.TestCase):
         req=Request(self.base+path,data=data,method=method,headers=headers or {})
         try:
             with urlopen(req,timeout=5) as r:return r.status,r.read()
-        except HTTPError as e:return e.code,e.read()
+        except HTTPError as e:
+            with e:return e.code,e.read()
 
     def create(self):
         code,raw=self.call('/api/jobs','POST',b'{"top_k": 3}',{'Content-Type':'application/json'})
@@ -60,6 +61,15 @@ class ApiTests(unittest.TestCase):
 
     def test_start_requires_both_files(self):
         self.assertEqual(self.call(f'/api/jobs/{self.create()}/start','POST',b'')[0],409)
+
+    def test_recommendations_route_preserved_with_large_payload(self):
+        payload = {'subject': 'Поставка бумаги', 'items': [{'name': 'Бумага ' * 3000}], 'top_k': 10}
+        expected = {'items': [], 'warnings': []}
+        with patch.object(server.recommender, 'READY', True), patch.object(server.recommender, 'recommend_detailed', return_value=expected) as recommend:
+            code, raw = self.call('/api/recommendations', 'POST', json.dumps(payload).encode(), {'Content-Type': 'application/json'})
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw), expected)
+        recommend.assert_called_once_with(payload)
 
     def test_invalid_top_k_and_unsafe_origin(self):
         self.assertEqual(self.call('/api/jobs','POST',b'{"top_k":0}')[0],400)
