@@ -1,0 +1,85 @@
+"""Прогресс поштучного прогона (шаг 5: ГИР БО, РНП) — страница /progress и JSON /api/progress.
+
+Источник цифр — enrichment_runs: batch пишет туда статус каждого ИНН по каждому источнику.
+"""
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
+from sqlalchemy import func, select
+
+from . import storage
+
+router = APIRouter(tags=["Служебное"])
+
+TRACKED = {"bo": "ГИР БО (финансы, ОКВЭД)", "rnp": "РНП ЕИС", "egrul": "ЕГРЮЛ (статус)", "pb": "Прозрачный бизнес"}
+RATE_WINDOW = timedelta(minutes=10)
+STALE_AFTER = timedelta(minutes=5)
+PAGE = (Path(__file__).parent / "progress.html").read_text(encoding="utf-8")
+
+
+def _aware(ts: datetime | None) -> datetime | None:
+    if ts is not None and ts.tzinfo is None:  # SQLite отдаёт naive, пишем UTC
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def compute(engine) -> dict:
+    runs = storage.enrichment_runs
+    now = datetime.now(timezone.utc)
+    with engine.connect() as conn:
+        # всего ИНН поставщиков = все, по кому загружались выгрузки ФНС (шаги 1–4)
+        total = conn.execute(select(func.count(func.distinct(runs.c.inn)))
+                             .where(runs.c.source == "fns_rsmp")).scalar() or 0
+        by_status = conn.execute(select(runs.c.source, runs.c.status, func.count())
+                                 .where(runs.c.source.in_(TRACKED)).group_by(runs.c.source, runs.c.status)).all()
+        recent = {src: (n, _aware(first)) for src, n, first in conn.execute(
+            select(runs.c.source, func.count(), func.min(runs.c.updated_at))
+            .where(runs.c.source.in_(TRACKED), runs.c.updated_at >= now - RATE_WINDOW)
+            .group_by(runs.c.source)).all()}
+        last = dict(conn.execute(select(runs.c.source, func.max(runs.c.updated_at))
+                                 .where(runs.c.source.in_(TRACKED)).group_by(runs.c.source)).all())
+        errors = conn.execute(select(runs.c.source, runs.c.inn, runs.c.status, runs.c.error, runs.c.updated_at)
+                              .where(runs.c.source.in_(TRACKED), runs.c.status != "ok")
+                              .order_by(runs.c.updated_at.desc()).limit(8)).all()
+
+    sources = []
+    for src, name in TRACKED.items():
+        counts = {st: n for s, st, n in by_status if s == src}
+        done = sum(counts.values())
+        # скорость за последние 10 мин, а если прогон идёт меньше — за фактическое время работы
+        n_recent, first = recent.get(src, (0, None))
+        span_min = max((now - first).total_seconds() / 60, 1.0) if first else 1.0
+        per_min = n_recent / span_min
+        if src in ("egrul", "pb") and not per_min:
+            continue  # в шаг 5 не входят — показываем, только пока их кто-то гоняет
+        remaining = max(total - done, 0)
+        last_ts = _aware(last.get(src))
+        sources.append({
+            "source": src, "name": name, "total": total, "done": done, "remaining": remaining,
+            "ok": counts.get("ok", 0), "error": counts.get("error", 0), "captcha": counts.get("captcha", 0),
+            "percent": round(done / total * 100, 1) if total else 0.0,
+            "per_min": round(per_min, 1),
+            "eta_min": round(remaining / per_min) if per_min else None,
+            "last_at": last_ts.isoformat() if last_ts else None,
+            "idle_s": int((now - last_ts).total_seconds()) if last_ts else None,
+            "running": bool(last_ts and now - last_ts < STALE_AFTER),
+        })
+    return {
+        "now": now.isoformat(), "total_inns": total, "sources": sources,
+        "recent_errors": [{"source": s, "inn": i, "status": st, "error": (e or "")[:200],
+                           "at": _aware(t).isoformat()} for s, i, st, e, t in errors],
+    }
+
+
+@router.get("/api/progress", summary="Прогресс поштучного прогона (JSON)")
+def api_progress():
+    from .api import state  # engine создаётся в lifespan приложения
+    return compute(state["engine"])
+
+
+@router.get("/progress", response_class=HTMLResponse, include_in_schema=False)
+def page():
+    return PAGE

@@ -76,6 +76,10 @@ app = FastAPI(title="Обогащение контрагентов", version="1.
               openapi_tags=[{"name": "Контрагенты", "description": "Карточка компании по ИНН"},
                             {"name": "Служебное"}])
 
+from .progress import router as progress_router  # noqa: E402
+
+app.include_router(progress_router)
+
 EXAMPLE = json.loads((Path(__file__).parent / "api_example.json").read_text(encoding="utf-8"))
 
 

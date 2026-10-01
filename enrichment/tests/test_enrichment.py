@@ -441,3 +441,16 @@ def test_age_from_ogrn():
     exact, _ = card.build_company("7804428656", [_fact("ogrn", "1099847036750", "fns_rsmp"),
                                                 _fact("reg_date", "2009-12-22", "egrul")], {"egrul": "ok"})
     assert exact["age_source"] == "reg_date"  # точная дата приоритетнее оценки
+
+
+def test_progress(db_url):
+    from enrichment import progress
+    engine = storage.connect(db_url)
+    storage.save_results(engine, [SourceResult("fns_rsmp", i) for i in ("7804428656", "7814778459", "7707049388")]
+                         + [SourceResult("bo", "7804428656"), SourceResult("bo", "7814778459", ok=False, error="boom")])
+    d = progress.compute(engine)
+    bo = next(s for s in d["sources"] if s["source"] == "bo")
+    assert d["total_inns"] == 3 and bo["done"] == 2 and bo["remaining"] == 1 and bo["error"] == 1
+    assert bo["running"] and bo["per_min"] > 0 and bo["eta_min"] is not None
+    assert [s["source"] for s in d["sources"]] == ["bo", "rnp"]  # rnp с 0% виден, egrul/pb вне шага 5 скрыты
+    assert d["recent_errors"][0]["inn"] == "7814778459"

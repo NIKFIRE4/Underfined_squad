@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Прогресс обогащения</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1a1a1a; --muted: #6b7280; --border: #e5e7eb;
+    --bar: #e9edf2; --ok: #2e7d32; --run: #1976d2; --warn: #e65100; --err: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111318; --card: #1a1d24; --text: #eceff4; --muted: #9aa3b2; --border: #2a2f3a;
+            --bar: #262b35; --ok: #66bb6a; --run: #64b5f6; --warn: #ffb74d; --err: #ef5350; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-top: 16px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .name { font-weight: 600; font-size: 16px; }
+  .pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; color: #fff; }
+  .pill.run { background: var(--run); } .pill.stop { background: var(--warn); } .pill.done { background: var(--ok); }
+  .bar { height: 12px; background: var(--bar); border-radius: 6px; overflow: hidden; margin: 12px 0 8px; }
+  .fill { height: 100%; background: var(--run); border-radius: 6px; transition: width .6s ease; }
+  .fill.done { background: var(--ok); }
+  .big { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 10px; }
+  .stat .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .l { color: var(--muted); font-size: 12px; }
+  .err .v { color: var(--err); } .cap .v { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.msg { word-break: break-word; color: var(--muted); }
+  .alert { border-color: var(--warn); }
+  code { font-size: 12px; background: var(--bar); padding: 1px 5px; border-radius: 4px; }
+  #error { color: var(--err); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Прогресс обогащения — шаг 5</h1>
+    <span class="muted" id="updated">загрузка…</span>
+  </header>
+  <div id="error"></div>
+  <div id="sources"></div>
+  <div class="card" id="errors-card" hidden>
+    <div class="name">Последние ошибки и капчи</div>
+    <p class="muted">Ошибка по ИНН не останавливает прогон. Повторный запуск <code>batch</code> перезапросит только их.</p>
+    <table><thead><tr><th>Источник</th><th>ИНН</th><th>Статус</th><th>Сообщение</th><th>Когда</th></tr></thead>
+      <tbody id="errors"></tbody></table>
+  </div>
+  <p class="muted">Обновляется каждые 15 с. Скорость — за последние 10 минут. «Остановлен» — нет новых записей больше 5 минут:
+    проверьте <code>docker ps</code> и <code>docker logs enr-bo</code>, перезапуск продолжит с места остановки.</p>
+</main>
+<script>
+const fmt = n => n.toLocaleString("ru-RU");
+const ago = s => s == null ? "—" : s < 60 ? `${s} с назад` : s < 3600 ? `${Math.round(s / 60)} мин назад` : `${(s / 3600).toFixed(1)} ч назад`;
+const eta = m => m == null ? "—" : m < 60 ? `~${m} мин` : `~${Math.floor(m / 60)} ч ${m % 60} мин`;
+const time = iso => new Date(iso).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+function card(s) {
+  const done = s.remaining === 0;
+  const state = done ? ["done", "Готово"] : s.running ? ["run", "Идёт"] : ["stop", "Остановлен"];
+  const finish = !done && s.eta_min != null ? `, закончится около ${time(new Date(Date.now() + s.eta_min * 60000).toISOString())}` : "";
+  return `<div class="card ${!done && !s.running ? "alert" : ""}">
+    <div class="row"><span class="name">${esc(s.name)}</span><span class="pill ${state[0]}">${state[1]}</span></div>
+    <div class="bar"><div class="fill ${done ? "done" : ""}" style="width:${s.percent}%"></div></div>
+    <div class="row"><span class="big">${s.percent}%</span>
+      <span class="muted">${fmt(s.done)} из ${fmt(s.total)} ИНН · осталось ${eta(s.eta_min)}${finish}</span></div>
+    <div class="stats">
+      <div class="stat"><div class="v">${s.per_min}/мин</div><div class="l">скорость</div></div>
+      <div class="stat"><div class="v">${fmt(s.ok)}</div><div class="l">успешно</div></div>
+      <div class="stat err"><div class="v">${fmt(s.error)}</div><div class="l">ошибок</div></div>
+      <div class="stat cap"><div class="v">${fmt(s.captcha)}</div><div class="l">капч</div></div>
+      <div class="stat"><div class="v">${ago(s.idle_s)}</div><div class="l">последняя запись</div></div>
+    </div></div>`;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/progress");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    document.getElementById("error").textContent = "";
+    document.getElementById("sources").innerHTML = d.sources.length ? d.sources.map(card).join("")
+      : `<div class="card">Шаг 5 ещё не запускался. Всего ИНН: ${fmt(d.total_inns)}.</div>`;
+    const errs = d.recent_errors;
+    document.getElementById("errors-card").hidden = !errs.length;
+    document.getElementById("errors").innerHTML = errs.map(e =>
+      `<tr><td>${esc(e.source)}</td><td>${esc(e.inn)}</td><td>${esc(e.status)}</td><td class="msg">${esc(e.error)}</td><td>${time(e.at)}</td></tr>`).join("");
+    document.getElementById("updated").textContent = `обновлено в ${time(d.now)}`;
+  } catch (e) {
+    document.getElementById("error").textContent = `Нет связи с сервисом: ${e.message}. Запущен ли enrichment-api?`;
+  }
+}
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>
