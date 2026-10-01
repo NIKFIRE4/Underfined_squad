@@ -37,7 +37,8 @@ class Recommender:
     def __init__(self, model_dir='models'):
         d = Path(model_dir)
         self.meta = json.loads((d / 'meta.json').read_text(encoding='utf-8'))
-        self.booster = lgb.Booster(model_file=str(d / 'ranker.txt'))
+        # CRLF после git checkout на Windows ломает парсер LightGBM, поэтому нормализуем переводы строк
+        self.booster = lgb.Booster(model_str=(d / 'ranker.txt').read_text(encoding='utf-8').replace('\r\n', '\n'))
         self.text = TextModel.load(d / 'text_model.joblib')
         self.vocab = Vocab.load(d / 'vocab.npz')
         self.suppliers = pd.read_parquet(d / 'suppliers.parquet')
@@ -81,18 +82,40 @@ class Recommender:
         }])
         return LotBatch(ctx, keys, vecs)
 
-    def recommend(self, lot, top_n=20):
+    def rank(self, lot, top_n=10, n_factors=8):
+        """Полный результат для API: топ-N с объяснениями и вкладами признаков, число кандидатов, предупреждения."""
         b = self.make_batch(lot)
+        warnings = []
+        if b.ctx.cid.iloc[0] < 0:
+            warnings.append('Заказчик не встречался в истории закупок: признаки по заказчику не используются')
+        if not any(isinstance(i.get('okpd2'), str) and i['okpd2'] for i in lot.get('items') or []):
+            warnings.append('Не передан ни один код ОКПД2: подбор идёт по тексту и заказчику')
+        elif b.keys.empty:
+            warnings.append('Ни один код ОКПД2 лота не встречался в истории: подбор идёт по тексту и заказчику')
         cands = generate(self.snap, b)
         if cands.empty:
-            return pd.DataFrame()
+            return {'top': pd.DataFrame(), 'n_candidates': 0, 'warnings': warnings + ['Кандидаты не найдены'], 'batch': b}
         F = build_features(self.snap, b, cands)
         F['score'] = self.booster.predict(F[FEATURES], num_iteration=self.meta['best_iteration'])
         F['p_win'] = softmax_by_lot(F.lot_id, F.score, self.meta['temperature']) * self.meta['candidate_coverage']
         top = F.sort_values('score', ascending=False).head(top_n).reset_index(drop=True)
         contrib = self.booster.predict(top[FEATURES], num_iteration=self.meta['best_iteration'], pred_contrib=True)
         ex = explain(top, contrib)
+        titles, groups = self.meta['titles'], self.meta['groups']
+        usable = [j for j, f in enumerate(FEATURES) if groups[f] != 'лот']
+        factors = []
+        for i in range(len(top)):
+            order = sorted(usable, key=lambda j: -abs(contrib[i, j]))[:n_factors]
+            factors.append([{
+                'feature': FEATURES[j], 'title': titles[FEATURES[j]], 'group': groups[FEATURES[j]],
+                'value': None if pd.isna(top.at[i, FEATURES[j]]) else round(float(top.at[i, FEATURES[j]]), 4),
+                'contribution': round(float(contrib[i, j]), 4),
+            } for j in order])
         top = top.merge(self.suppliers[['sid', 'inn']], on='sid', how='left')
         res = pd.concat([top[['inn', 'score', 'p_win']], ex], axis=1)
         res.insert(0, 'rank', np.arange(1, len(res) + 1))
-        return res
+        res['factors'] = factors
+        return {'top': res, 'n_candidates': int(len(F)), 'warnings': warnings, 'batch': b}
+
+    def recommend(self, lot, top_n=20):
+        return self.rank(lot, top_n)['top']

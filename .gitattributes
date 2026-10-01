@@ -3,3 +3,6 @@ models/**/*.npy filter=lfs diff=lfs merge=lfs -text
 models/*.npz filter=lfs diff=lfs merge=lfs -text
 models/text_model.joblib filter=lfs diff=lfs merge=lfs -text
 models/**/*.parquet filter=lfs diff=lfs merge=lfs -text
+models/ranker.txt -text
+models/meta.json -text
+models/snapshot/cutoff.txt -text

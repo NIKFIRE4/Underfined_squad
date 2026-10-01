@@ -51,6 +51,23 @@ rec.recommend({
 
 Ответ: `rank`, `inn`, `score`, `p_win` (вероятность победы), `status`, `status_rule`, `reasons`, `risks`.
 
+## Подключение к веб-сервису (монолит)
+
+Модель работает внутри процесса веб-сервиса, отдельный сервис не нужен. Файл `web-service/integrations/recommender.py`:
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # корень репозитория
+
+from recsys.webservice import READY, recommend  # noqa: E402,F401
+```
+
+Перед запуском сервера: `git lfs pull` (артефакты в `models/`) и `pip install -r requirements.txt` в тот же Python, которым запускается `server.py`. Модель грузится при первом лоте (~6 с), дальше ~2–4 с на лот.
+
+`recommend(lot, top_k)` возвращает `2 × top_k` кандидатов (запас на фильтры обогащения): `supplier_inn`, `score` 0–100 (место среди ~300 кандидатов лота, 100 — лучший), `status`, `reasons` (вероятность победы и 2 причины), `sources`. Название, роль, регион и МСП заполняет `enrichment` по ИНН.
+
 ## Обучение с нуля
 
 1. Положите в корень проекта CSV организаторов: `Извещения_24-25.csv`, `ТРУ_24-25.csv`, `Поставщики_24-25.csv`.

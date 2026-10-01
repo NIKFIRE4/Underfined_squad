@@ -147,7 +147,9 @@ def _status(row: dict, current: str | None) -> tuple[str, list[str]]:
 
 def _apply(c: Any, row: dict, card: dict, lot_okpd2: list[str]) -> None:
     role = classify_role(row | {k: v["value"] for k, v in card.items()}, lot_okpd2)
-    c.supplier_name = c.supplier_name or row.get("name_short") or row.get("name_full") or c.supplier_inn
+    # модель отдаёт ИНН вместо названия (сервер не принимает пустое имя) — заменяем на название из карточки
+    own_name = c.supplier_name if c.supplier_name != c.supplier_inn else ""
+    c.supplier_name = own_name or row.get("name_short") or row.get("name_full") or c.supplier_inn
     c.supplier_kpp = c.supplier_kpp or row.get("kpp") or ""
     c.region = c.region or row.get("region_code") or ""
     if row.get("is_smp") is not None:
