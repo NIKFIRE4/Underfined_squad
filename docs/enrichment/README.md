@@ -68,12 +68,23 @@ docker compose run -d --name enr-egrul enrichment batch --missing-status --sourc
 
 Пока статус не проверен, адаптер ставит кандидату «Требует проверки» и не выдаёт его за действующего.
 
-**Перенос готовой базы** между машинами (вместо повторного многочасового прогона):
+**Готовый дамп базы (2026-10-01)** — чтобы не повторять многочасовой прогон:
+[disk.yandex.ru/d/KjhHtA1XTdFgCg](https://disk.yandex.ru/d/KjhHtA1XTdFgCg) · `enrichment.dump`, 80 МБ ·
+SHA-256 `04dcd98eb97282219297f47c0861cf313a9a1c904ce76b8d6692d91411fe5ba7`.
+Внутри: 44 174 компании, ~959 тыс. фактов, пул 479 513 МСП СПб/ЛО, реестры, история; ГИР БО — ~3,3 тыс. ИНН, РНП — ~3,8 тыс.
+Файл не в git: репозиторий публичный, а в дампе ФИО и ИНН руководителей и учредителей.
 
 ```bash
-scripts/db_dump.sh                 # → data/enrichment.dump; NO_RAW=1 — без сырых ответов, в разы меньше
-docker compose up -d db && scripts/db_restore.sh data/enrichment.dump   # на целевой машине
+# скачать (прямая ссылка через API Яндекс Диска), проверить и восстановить
+mkdir -p data && curl -L -o data/enrichment.dump "$(curl -s 'https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=https://disk.yandex.ru/d/KjhHtA1XTdFgCg' | python3 -c 'import sys,json;print(json.load(sys.stdin)["href"])')"
+shasum -a 256 data/enrichment.dump      # должно совпасть с SHA-256 выше (Linux: sha256sum)
+docker compose up -d db && scripts/db_restore.sh data/enrichment.dump
+# затем догрузить поштучные источники — возьмут только необработанные ИНН:
+docker compose run -d --name enr-bo  enrichment batch --sources bo  --concurrency 2
+docker compose run -d --name enr-rnp enrichment batch --sources rnp --concurrency 2
 ```
+
+Новый дамп своей базы: `scripts/db_dump.sh` → `data/enrichment.dump` (выкладывать в облако, не в git).
 
 Без Docker: `python3 -m venv .venv && .venv/bin/pip install -r enrichment/requirements.txt`, БД по умолчанию — `sqlite:///data/enrichment.db`. Другую БД задаёт `--db` или переменная `ENRICHMENT_DB`.
 
@@ -228,7 +239,7 @@ from enrichment.webservice import READY, enrich  # noqa: E402,F401
 
 ### Состояние машины разработки (@stoff7, на 2026-10-01 15:00)
 
-В локальном PostgreSQL (`docker compose`) загружено всё быстрое: выгрузки ФНС, реестр МСП и пул, РРПП, реестр ПО, история — по всем 44 174 ИНН. Поштучные прогоны **остановлены**, их продолжают на машине стенда: ГИР БО прошёл ~3,3 тыс. ИНН, РНП — ~3,7 тыс., ЕГРЮЛ не запускался. Дамп не снят. Варианты для стенда: прогон с нуля (`scripts/enrich_all.sh`) или перенос этой базы (`scripts/db_dump.sh` здесь → `scripts/db_restore.sh` там) — тогда `batch --sources bo` и `--sources rnp` продолжат с необработанных ИНН.
+В локальном PostgreSQL (`docker compose`) загружено всё быстрое: выгрузки ФНС, реестр МСП и пул, РРПП, реестр ПО, история — по всем 44 174 ИНН. Поштучные прогоны **остановлены**, их продолжают на машине стенда: ГИР БО прошёл ~3,3 тыс. ИНН, РНП — ~3,7 тыс., ЕГРЮЛ не запускался. Дамп снят и выложен (см. «Готовый дамп базы» в «Быстром старте»). Варианты для стенда: восстановить дамп и догрузить `batch --sources bo` / `--sources rnp` (продолжат с необработанных ИНН) или прогон с нуля (`scripts/enrich_all.sh`).
 
 ### Осталось — обязательно
 
