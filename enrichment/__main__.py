@@ -22,7 +22,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from . import discovery, fns_dumps, history, registries, storage
+from . import discovery, fns_dumps, history, registries, rnp_dump, storage
 from .card import build_company
 from .card import links as card_links
 from .http import Http
@@ -76,6 +76,9 @@ async def cmd_batch(args) -> None:
     if not args.force:
         done = storage.done_inns(engine, args.sources)
         inns = [i for i in inns if i not in done]
+    if "bo" in args.sources:
+        # у ИП в ГИР БО отчётности нет — сначала юрлица, ИП в конце (порядок внутри групп сохраняется)
+        inns.sort(key=lambda i: len(i) == 12)
     if args.limit:
         inns = inns[: args.limit]
     log.info("batch: %d INN, sources=%s, concurrency=%d", len(inns), args.sources, args.concurrency)
@@ -176,6 +179,23 @@ def cmd_discover(args) -> None:
         print(f"{c.score:5.1f}  {c.inn:<12} {c.region_code or '':<3} {(c.name or '')[:50]:<50} "
               f"{c.evidence[0]['text'][:90]}")
     log.info("найдено %d новых компаний", len(found))
+
+
+async def cmd_rnp_dump(args) -> None:
+    engine, http = _engine(args.db), Http()
+    try:
+        t0 = time.monotonic()
+        n = await rnp_dump.crawl(http, engine)
+        log.info("РНП: скачано %d записей за %.0f мин", n, (time.monotonic() - t0) / 60)
+    finally:
+        await http.aclose()
+    targets = set(supplier_inns(args.suppliers))
+    results = rnp_dump.apply_to_suppliers(engine, targets)
+    storage.save_results(engine, results)
+    log.info("РНП: в реестре сейчас %d поставщиков, были когда-либо — %d",
+             sum(1 for r in results if any(f.field == "in_rnp" and f.value for f in r.facts)),
+             sum(1 for r in results if any(f.field == "rnp_ever" and f.value for f in r.facts)))
+    rebuild_all(engine, targets)
 
 
 def cmd_history_load(args) -> None:
@@ -323,6 +343,8 @@ def main() -> None:
     rl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     rl.add_argument("--gisp", help=f"по умолчанию {registries.GISP_PATH}")
     rl.add_argument("--software", help=f"по умолчанию {registries.SOFTWARE_GLOB}")
+    rd = sub.add_parser("rnp-dump", help="РНП целиком (~40 мин) вместо запроса по каждому ИНН (~11 ч)")
+    rd.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     hl = sub.add_parser("history-load", help="признаки из истории закупок (роль «дистрибьютор»)")
     hl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     dc = sub.add_parser("discover", help="новые компании по ОКПД2 лота (ФТ-06)")
@@ -358,6 +380,8 @@ def main() -> None:
         cmd_fns_load(args)
     elif args.cmd == "registries-load":
         cmd_registries_load(args)
+    elif args.cmd == "rnp-dump":
+        asyncio.run(cmd_rnp_dump(args))
     elif args.cmd == "history-load":
         cmd_history_load(args)
     elif args.cmd == "discover":

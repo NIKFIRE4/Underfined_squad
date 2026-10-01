@@ -47,6 +47,8 @@ def compute(engine) -> dict:
             storage.company_facts.c.source == "contacts", storage.company_facts.c.field == "contact_phones")).scalar()
         found_email = conn.execute(select(func.count()).select_from(storage.company_facts).where(
             storage.company_facts.c.source == "contacts", storage.company_facts.c.field == "contact_emails")).scalar()
+        rnp_rows = conn.execute(select(func.count()).select_from(storage.rnp_registry)).scalar()
+        rnp_last = conn.execute(select(func.max(storage.rnp_registry.c.included))).scalar()
         errors = conn.execute(select(runs.c.source, runs.c.inn, runs.c.status, runs.c.error, runs.c.updated_at)
                               .where(runs.c.source.in_(TRACKED), runs.c.status != "ok")
                               .order_by(runs.c.updated_at.desc()).limit(30)).all()
@@ -79,7 +81,8 @@ def compute(engine) -> dict:
             "last_at": last_ts.isoformat() if last_ts else None,
             "idle_s": int((now - last_ts).total_seconds()) if last_ts else None,
             "running": bool(last_ts and now - last_ts < STALE_AFTER),
-            "found": {"с телефоном": found, "с почтой": found_email} if src == "contacts" else None,
+            "found": ({"с телефоном": found, "с почтой": found_email} if src == "contacts"
+                      else {"записей реестра скачано": rnp_rows} if src == "rnp" and rnp_rows else None),
         })
     return {
         "now": now.isoformat(), "total_inns": total, "sources": sources,

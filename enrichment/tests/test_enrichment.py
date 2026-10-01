@@ -507,3 +507,25 @@ def test_rate_limited_pauses_and_retries(monkeypatch):
     assert http.limiters["contacts_card"].interval > card_before  # замедлен только эндпоинт с 429
     assert http.limiters["contacts"].interval == search_before
     run(http.aclose())
+
+
+def test_rnp_dump(db_url):
+    from datetime import date as _d
+    from enrichment import rnp_dump
+    html = (FX / "rnp_search.html").read_text(encoding="utf-8")
+    pages = []
+
+    class PagedHttp:
+        async def request(self, source, method, url, params=None, **kw):
+            pages.append(params)
+            return httpx.Response(200, text=html if params["pageNumber"] == 1 else "<html></html>")
+
+    engine = storage.connect(db_url)
+    n = run(rnp_dump.crawl(PagedHttp(), engine, _d(2025, 1, 1), _d(2025, 2, 15)))
+    entries = rnp.parse_entries(html)
+    assert n == 2 * len(entries)  # два месяца, на каждом одна страница (меньше 50 — стоп)
+    assert {p["inclusionDateFrom"] for p in pages} == {"01.01.2025", "01.02.2025"}
+    target = entries[0]["inn"]
+    res = {r.inn: facts(r) for r in rnp_dump.apply_to_suppliers(engine, {target, "7804428656"})}
+    assert res[target]["rnp_ever"] is True and res[target]["rnp_entries"]
+    assert res["7804428656"]["in_rnp"] is False and res["7804428656"]["rnp_ever"] is False
