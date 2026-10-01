@@ -30,6 +30,10 @@ class RetryableStatus(SourceError):
     pass
 
 
+class RateLimited(CaptchaRequired):
+    """HTTP 429: источник просит снизить частоту — обрабатываем как капчу (пауза + замедление)."""
+
+
 class RateLimiter:
     """Не чаще одного запроса в `interval` секунд на источник, общий для всех корутин."""
 
@@ -61,7 +65,7 @@ DEFAULT_INTERVALS = {
     "rmsp": 0.3,
     "bo": 0.5,
     "rnp": 1.0,
-    "contacts": 0.7,  # тот же хост, что РНП (zakupki.gov.ru); вместе с РНП ~2,4 запроса/с
+    "contacts": 2.0,  # поиск контрактов ЕИС отвечает 429 уже при ~1,4 запроса/с — медленнее, чем РНП
 }
 
 
@@ -97,7 +101,9 @@ class Http:
             with attempt:
                 await self.limiters[source].wait()
                 r = await client.request(method, url, **kw)
-                if r.status_code == 429 or r.status_code >= 500:
+                if r.status_code == 429:
+                    raise RateLimited(f"{source}: HTTP 429")
+                if r.status_code >= 500:
                     raise RetryableStatus(f"{source}: HTTP {r.status_code}")
                 return r
         raise AssertionError("unreachable")

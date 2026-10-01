@@ -28,12 +28,12 @@ async def _guard(source: str, inn: str, http: Http, call: Callable[[], Awaitable
         except asyncio.TimeoutError:
             log.warning("%s: timeout %ss on %s", source, timeout, inn)
             return SourceResult(source, inn, ok=False, error="timeout")
-        except CaptchaRequired:
+        except CaptchaRequired as e:  # и RateLimited (HTTP 429)
             limiter = http.limiters[source]
             limiter.pause(CAPTCHA_COOLDOWN)
             limiter.slow_down()
-            log.warning("%s: captcha on %s, cooldown %ss, interval now %.1fs",
-                        source, inn, CAPTCHA_COOLDOWN, limiter.interval)
+            log.warning("%s: %s on %s, cooldown %ss, interval now %.1fs",
+                        source, e, inn, CAPTCHA_COOLDOWN, limiter.interval)
             if attempt == captcha_retries:
                 return SourceResult(source, inn, ok=False, error="captcha")
         except Exception as e:  # noqa: BLE001 — источник не должен ронять карточку

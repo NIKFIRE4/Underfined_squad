@@ -485,3 +485,22 @@ def test_contacts_parse_and_fetch():
     # чужой ИНН в карточке — контакты не берём
     f2 = facts(run(contacts.fetch(http, "7804428656", ["0172200004923000344"], None)))
     assert f2 == {"contacts_found": False}
+
+
+def test_rate_limited_pauses_and_retries(monkeypatch):
+    from enrichment import pipeline
+    from enrichment.http import Http, RateLimited
+    http = Http()
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RateLimited("contacts: HTTP 429")
+        return SourceResult("contacts", INN)
+
+    before = http.limiters["contacts"].interval
+    res = run(pipeline._guard("contacts", INN, http, flaky))
+    assert res.ok and len(calls) == 2  # повтор после паузы
+    assert http.limiters["contacts"].interval > before  # и замедление
+    run(http.aclose())
