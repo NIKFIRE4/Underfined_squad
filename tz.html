@@ -1,0 +1,837 @@
+<title>ТЗ сервиса подбора контрагентов</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Unbounded:wght@500;600&display=swap">
+<style>
+/* Layout: документ ТЗ в духе ГОСТ 34 — липкое оглавление слева, колонка текста ~70ch, схемы на всю ширину основной колонки */
+:root{
+  --paper:#F3F5F2;
+  --panel:#FCFDFB;
+  --lane:#E7ECE8;
+  --ink:#17222B;
+  --muted:#58656D;
+  --rule:#D3DAD5;
+  --accent:#0E6B5A;
+  --accent-soft:#DCEBE4;
+  --on-accent:#FFFFFF;
+  --warn:#8F5300;
+  --warn-soft:#F5E8D0;
+  --f-display:"Unbounded","Golos Text",system-ui,sans-serif;
+  --f-body:"Golos Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  --s-1:.8125rem; --s0:1rem; --s1:1.1875rem; --s2:1.5rem; --s3:2.25rem;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --paper:#10161A; --panel:#162027; --lane:#1B262D; --ink:#E1E8E5; --muted:#9AA8A6;
+    --rule:#2A373E; --accent:#5DC5A8; --accent-soft:#163430; --on-accent:#0B1916;
+    --warn:#E3A84E; --warn-soft:#3A2D16;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#10161A; --panel:#162027; --lane:#1B262D; --ink:#E1E8E5; --muted:#9AA8A6;
+  --rule:#2A373E; --accent:#5DC5A8; --accent-soft:#163430; --on-accent:#0B1916;
+  --warn:#E3A84E; --warn-soft:#3A2D16;
+}
+
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:var(--s0);line-height:1.6;padding-inline:20px}
+.wrap{max-width:1260px;margin:0 auto;padding-block:40px 80px;display:grid;grid-template-columns:220px minmax(0,1fr);gap:56px}
+@media (max-width:1000px){.wrap{grid-template-columns:minmax(0,1fr);gap:24px;padding-block:24px 60px}}
+
+/* оглавление */
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 24px);align-self:start;font-size:var(--s-1)}
+nav.toc p{margin:0 0 10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600;font-size:.75rem}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+nav.toc a{display:grid;grid-template-columns:2.2em 1fr;padding:4px 8px;border-radius:4px;color:var(--ink);text-decoration:none}
+nav.toc a span{font-family:var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums}
+nav.toc a:hover{background:var(--lane)}
+nav.toc a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media (max-width:1000px){nav.toc{position:static;border:1px solid var(--rule);border-radius:6px;padding:14px;background:var(--panel)}
+  nav.toc ol{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}}
+
+main{min-width:0}
+.prose{max-width:70ch}
+a{color:var(--accent)}
+
+/* титульный блок */
+header.title{border-bottom:2px solid var(--ink);padding-bottom:28px;margin-bottom:8px}
+.eyebrow{font-size:.75rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:0 0 14px}
+h1{font-family:var(--f-display);font-weight:600;font-size:var(--s3);line-height:1.15;margin:0 0 16px;text-wrap:balance;letter-spacing:-.01em}
+.lead{font-size:var(--s1);color:var(--ink);max-width:62ch;margin:0 0 24px}
+dl.req{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0;margin:0;border:1px solid var(--rule);border-radius:6px;background:var(--panel);overflow:hidden}
+dl.req div{padding:12px 16px;border-right:1px solid var(--rule)}
+dl.req div:last-child{border-right:0}
+dl.req dt{font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600}
+dl.req dd{margin:2px 0 0;font-weight:500}
+@media (max-width:700px){dl.req div{border-right:0;border-bottom:1px solid var(--rule)}}
+
+/* разделы */
+section{padding-top:44px;scroll-margin-top:16px}
+h2{display:flex;gap:14px;align-items:baseline;font-size:var(--s2);font-weight:600;line-height:1.25;margin:0 0 16px;text-wrap:balance}
+h2 .n{font-family:var(--f-display);font-weight:500;color:var(--accent);font-size:1.05rem;min-width:1.8em}
+h3{font-size:var(--s1);font-weight:600;margin:28px 0 10px;text-wrap:balance}
+p{margin:0 0 12px}
+ul,ol{margin:0 0 14px;padding-left:1.3em}
+li{margin-bottom:6px}
+code,.mono{font-family:var(--f-mono);font-size:.86em}
+code{background:var(--lane);padding:1px 5px;border-radius:3px}
+strong{font-weight:600}
+
+.note{border-left:3px solid var(--warn);background:var(--warn-soft);padding:12px 16px;border-radius:0 6px 6px 0;max-width:70ch;margin:16px 0}
+.note b{color:var(--warn)}
+blockquote{margin:16px 0;padding:14px 18px;background:var(--accent-soft);border-radius:6px;max-width:70ch;font-size:var(--s1)}
+
+/* таблицы */
+.tw{overflow-x:auto;margin:14px 0 18px;border:1px solid var(--rule);border-radius:6px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:.92rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;vertical-align:top;padding:9px 14px;border-bottom:1px solid var(--rule)}
+th{font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--lane)}
+tr:last-child td{border-bottom:0}
+td.num{text-align:right;white-space:nowrap}
+td.id{font-family:var(--f-mono);font-size:.82rem;white-space:nowrap;color:var(--muted)}
+.pill{display:inline-block;font-size:.74rem;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.must{background:var(--accent-soft);color:var(--accent)}
+.want{background:var(--lane);color:var(--muted)}
+
+/* схемы */
+figure{margin:20px 0 26px}
+.fig-scroll{overflow-x:auto;border:1px solid var(--rule);border-radius:8px;background:var(--panel);padding:16px}
+.fig-scroll svg{display:block;width:100%;min-width:900px;height:auto;color:var(--muted)}
+figcaption{font-size:var(--s-1);color:var(--muted);margin-top:10px;max-width:80ch}
+svg text{font-family:var(--f-body);font-size:12.5px;fill:var(--ink)}
+svg .t{font-weight:600}
+svg .sub{font-size:11px;fill:var(--muted)}
+svg .lbl{font-size:11px;fill:var(--muted)}
+svg .lane-l{font-size:12px;font-weight:600;fill:var(--muted);letter-spacing:.02em}
+svg .lane{fill:var(--lane)}
+svg .lane2{fill:var(--panel)}
+svg .box{fill:var(--panel);stroke:var(--ink);stroke-width:1.2}
+svg .box.acc{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.6}
+svg .box.ext{fill:var(--warn-soft);stroke:var(--warn);stroke-dasharray:5 3}
+svg .ar{fill:none;stroke:currentColor;stroke-width:1.4}
+svg .ar.dash{stroke-dasharray:5 4}
+svg .ar.acc{stroke:var(--accent);stroke-width:2}
+svg .head{fill:currentColor}
+svg .head-acc{fill:var(--accent)}
+svg .badge{fill:var(--accent)}
+svg .badge-t{fill:var(--on-accent);font-size:10.5px;font-weight:700}
+svg .gate{stroke:var(--muted);stroke-width:1.2;stroke-dasharray:4 4}
+svg .gate.acc{stroke:var(--accent);stroke-width:2;stroke-dasharray:none}
+svg .gd{fill:var(--panel);stroke:var(--muted);stroke-width:1.2}
+svg .gd.acc{fill:var(--accent);stroke:var(--accent)}
+svg .phase{font-weight:600;font-size:13px}
+svg .hrs{font-family:var(--f-mono);font-size:11px;fill:var(--muted)}
+svg .row-l{font-size:11px;font-weight:600;letter-spacing:.08em;fill:var(--muted)}
+
+ol.steps{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 28px;margin:16px 0}
+ol.steps li{display:grid;grid-template-columns:28px 1fr;gap:10px;margin:0;font-size:.94rem}
+ol.steps li b.k{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:.72rem;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+
+pre{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;overflow-x:auto;font-family:var(--f-mono);font-size:.8rem;line-height:1.55;margin:12px 0 18px}
+
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin:14px 0}
+.cell{border:1px solid var(--rule);border-radius:6px;padding:14px 16px;background:var(--panel)}
+.cell h4{margin:0 0 6px;font-size:.98rem}
+.cell p{margin:0;font-size:.92rem;color:var(--muted)}
+
+ul.check{list-style:none;padding:0}
+ul.check li{padding-left:28px;position:relative}
+ul.check li::before{content:"";position:absolute;left:2px;top:.35em;width:13px;height:13px;border:1.5px solid var(--accent);border-radius:3px}
+
+footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--rule);color:var(--muted);font-size:var(--s-1)}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+html{scroll-behavior:smooth}
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Оглавление">
+  <p>Содержание</p>
+  <ol>
+    <li><a href="#s1"><span>1</span>Общие сведения</a></li>
+    <li><a href="#s2"><span>2</span>Назначение и цели</a></li>
+    <li><a href="#s3"><span>3</span>Сценарий заказчика</a></li>
+    <li><a href="#s4"><span>4</span>Исходные данные</a></li>
+    <li><a href="#s5"><span>5</span>Функциональные требования</a></li>
+    <li><a href="#s6"><span>6</span>Методология подбора</a></li>
+    <li><a href="#s7"><span>7</span>Архитектура</a></li>
+    <li><a href="#s8"><span>8</span>API</a></li>
+    <li><a href="#s9"><span>9</span>Нефункциональные требования</a></li>
+    <li><a href="#s10"><span>10</span>Оценка качества и приёмка</a></li>
+    <li><a href="#s11"><span>11</span>План реализации</a></li>
+    <li><a href="#s12"><span>12</span>Риски и открытые вопросы</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="title">
+  <p class="eyebrow">Хакатон RLT · Университет Росэлторг · Санкт-Петербург, 1–2 октября 2026</p>
+  <h1>Техническое задание на разработку сервиса подбора контрагентов</h1>
+  <p class="lead">Сервис принимает данные закупки и возвращает ранжированный список поставщиков, производителей и дистрибьюторов. Для каждого контрагента указаны роль, статус и причины, по которым он попал в список.</p>
+  <dl class="req">
+    <div><dt>Шифр</dt><dd class="mono">ТЗ-ПК-01</dd></div>
+    <div><dt>Редакция</dt><dd>0.1 от 01.10.2026</dd></div>
+    <div><dt>Площадки</dt><dd>АИС ГЗ, Электронный магазин СПб</dd></div>
+    <div><dt>Статус</dt><dd>Рабочий черновик команды</dd></div>
+  </dl>
+</header>
+
+<!-- 1 -->
+<section id="s1">
+  <h2><span class="n">1</span>Общие сведения</h2>
+  <div class="tw"><table>
+    <tbody>
+      <tr><th scope="row">Наименование</th><td>Интеллектуальный сервис поиска релевантных поставщиков, производителей и дистрибьюторов для АИС ГЗ и Электронного магазина Санкт-Петербурга</td></tr>
+      <tr><th scope="row">Постановщик</th><td>RLT, Университет Росэлторг (кейс хакатона)</td></tr>
+      <tr><th scope="row">Исполнитель</th><td>Команда хакатона</td></tr>
+      <tr><th scope="row">Сроки</th><td>1–2 октября 2026, защита по итогам второго дня</td></tr>
+      <tr><th scope="row">Исходные данные</th><td>Три выгрузки за 2024–2025 гг.: <code>Извещения</code>, <code>ТРУ</code>, <code>Поставщики</code> (раздел 4)</td></tr>
+      <tr><th scope="row">Результат</th><td>Работающий веб-сервис, исходный код, скрипт развёртывания, отчёт о качестве рекомендаций, презентация</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><b>Ограничение организаторов.</b> Внешние API нейросетей использовать запрещено. Все модели (эмбеддинги, классификаторы, языковая модель, если понадобится) работают локально внутри контура сервиса. Обращения к государственным реестрам данных ограничением не считаются, но список источников согласуем с организаторами (раздел 12).</div>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+  <h2><span class="n">2</span>Назначение и цели</h2>
+  <blockquote>По данным закупки сформировать ранжированный список потенциально релевантных контрагентов.</blockquote>
+  <div class="prose">
+    <p>Цели сервиса:</p>
+    <ul>
+      <li>сократить время, которое заказчик тратит на поиск исполнителей и анализ рынка;</li>
+      <li>расширить конкуренцию: показать компании, которые ещё не участвовали в закупках СПб, но способны поставить нужный товар;</li>
+      <li>сделать каждую рекомендацию проверяемой: роль, статус и причины выводятся из фактов с указанием источника.</li>
+    </ul>
+  </div>
+  <h3>Критерии оценки и чем мы их закрываем</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Критерий</th><th class="num">Баллы</th><th>Чем закрываем</th></tr></thead>
+    <tbody>
+      <tr><td>Работоспособность и целостность</td><td class="num">30</td><td>Сквозной поток «лот → список → карточка → экспорт» в одном развёртывании; демо на заранее отобранных лотах</td></tr>
+      <tr><td>Качество рекомендаций</td><td class="num">25</td><td>Временной сплит, Recall@K и NDCG@K против бейзлайна «топ по ОКПД2», метрики по срезам (раздел 10)</td></tr>
+      <tr><td>Обогащение и расширение пула</td><td class="num">25</td><td>Новые компании из реестров, классификация роли, источник и дата для каждого поля</td></tr>
+      <tr><td>Объяснимость</td><td class="num">10</td><td>2–3 причины на строку выдачи, правила присвоения роли и статуса с доказательствами</td></tr>
+      <tr><td>Интерфейс и UX</td><td class="num">10</td><td>Три экрана: лот, выдача, карточка контрагента; фильтры, отметки, выгрузка</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+  <h2><span class="n">3</span>Сценарий работы заказчика с сервисом</h2>
+  <div class="prose">
+    <p>Основной пользователь: специалист заказчика (контрактный управляющий), который готовит закупку и хочет понять, кто может её исполнить. Второстепенный: аналитик оператора площадки, который изучает конкуренцию по категориям.</p>
+  </div>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 1100 470" role="img" aria-label="Блок-схема: заказчик открывает лот, сервис разбирает запрос, ищет кандидатов в истории и открытых реестрах, фильтрует, обогащает и ранжирует их, интерфейс показывает список; если список не подходит, заказчик уточняет фильтры и сервис пересчитывает выдачу; если подходит, заказчик выгружает список, а отметки сохраняются для дообучения.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 z"/></marker>
+        <marker id="a1acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-acc" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <!-- дорожки -->
+      <rect class="lane" x="0" y="0" width="1100" height="120"/>
+      <rect class="lane2" x="0" y="120" width="1100" height="120"/>
+      <rect class="lane" x="0" y="240" width="1100" height="120"/>
+      <rect class="lane2" x="0" y="360" width="1100" height="110"/>
+      <text class="lane-l" x="14" y="64">Заказчик</text>
+      <text class="lane-l" x="14" y="176">Веб-</text><text class="lane-l" x="14" y="192">интерфейс</text>
+      <text class="lane-l" x="14" y="296">Сервис</text><text class="lane-l" x="14" y="312">подбора</text>
+      <text class="lane-l" x="14" y="411">Открытые</text><text class="lane-l" x="14" y="427">источники</text>
+
+      <!-- стрелки -->
+      <path class="ar" d="M201.5 88 V150" marker-end="url(#a1)"/>
+      <text class="lbl" x="208" y="124">lot_id или текст</text>
+      <path class="ar" d="M201.5 208 V270" marker-end="url(#a1)"/>
+      <text class="lbl" x="208" y="244">запрос</text>
+      <path class="ar" d="M273 300 H291" marker-end="url(#a1)"/>
+      <path class="ar" d="M436 300 H454" marker-end="url(#a1)"/>
+      <path class="ar" d="M599 300 H617" marker-end="url(#a1)"/>
+      <path class="ar" d="M364.5 387 V330" marker-end="url(#a1)"/>
+      <text class="lbl" x="371" y="372">новые компании</text>
+      <path class="ar" d="M527.5 387 V330" marker-end="url(#a1)"/>
+      <text class="lbl" x="534" y="372">реквизиты, финансы</text>
+      <path class="ar" d="M690.5 272 V210" marker-end="url(#a1)"/>
+      <path class="ar" d="M690.5 152 V90" marker-end="url(#a1)"/>
+      <text class="lbl" x="697" y="124">просмотр</text>
+      <path class="ar" d="M762 60 H793" marker-end="url(#a1)"/>
+      <path class="ar acc" d="M911.5 60 H943" marker-end="url(#a1acc)"/>
+      <text class="lbl" x="918" y="50">да</text>
+      <path class="ar" d="M853.5 98 V150" marker-end="url(#a1)"/>
+      <text class="lbl" x="860" y="130">нет</text>
+      <path class="ar" d="M853.5 208 V300 H764" marker-end="url(#a1)"/>
+      <text class="lbl" x="860" y="262">пересчёт</text>
+      <path class="ar dash" d="M1016.5 88 V270" marker-end="url(#a1)"/>
+      <text class="lbl" x="1023" y="180">отметки</text>
+
+      <!-- узлы -->
+      <rect class="box acc" x="130" y="32" width="143" height="56" rx="28"/>
+      <text class="t" x="201.5" y="56" text-anchor="middle">Открыть лот</text>
+      <text class="sub" x="201.5" y="73" text-anchor="middle">или вставить текст</text>
+
+      <rect class="box" x="130" y="152" width="143" height="56" rx="6"/>
+      <text class="t" x="201.5" y="176" text-anchor="middle">Карточка лота</text>
+      <text class="sub" x="201.5" y="193" text-anchor="middle">ОКПД2 · НМЦК · МСП</text>
+
+      <rect class="box" x="130" y="272" width="143" height="56" rx="6"/>
+      <text class="t" x="201.5" y="296" text-anchor="middle">Разбор запроса</text>
+      <text class="sub" x="201.5" y="313" text-anchor="middle">леммы, код ОКПД2</text>
+
+      <rect class="box" x="293" y="272" width="143" height="56" rx="6"/>
+      <text class="t" x="364.5" y="296" text-anchor="middle">Кандидаты</text>
+      <text class="sub" x="364.5" y="313" text-anchor="middle">ОКПД2, векторы, граф</text>
+
+      <rect class="box ext" x="293" y="387" width="306" height="56" rx="6"/>
+      <text class="t" x="446" y="411" text-anchor="middle">Открытые реестры</text>
+      <text class="sub" x="446" y="428" text-anchor="middle">ЕГРЮЛ · МСП · ГИР БО · ГИСП · ЕИС</text>
+
+      <rect class="box" x="456" y="272" width="143" height="56" rx="6"/>
+      <text class="t" x="527.5" y="296" text-anchor="middle">Фильтры, обогащение</text>
+      <text class="sub" x="527.5" y="313" text-anchor="middle">МСП · РНП · статус</text>
+
+      <rect class="box" x="619" y="272" width="143" height="56" rx="6"/>
+      <text class="t" x="690.5" y="296" text-anchor="middle">Роль и ранжирование</text>
+      <text class="sub" x="690.5" y="313" text-anchor="middle">скор + причины</text>
+
+      <rect class="box" x="619" y="152" width="143" height="56" rx="6"/>
+      <text class="t" x="690.5" y="176" text-anchor="middle">Список топ-N</text>
+      <text class="sub" x="690.5" y="193" text-anchor="middle">скор, роль, причины</text>
+
+      <rect class="box" x="619" y="32" width="143" height="56" rx="6"/>
+      <text class="t" x="690.5" y="56" text-anchor="middle">Изучает список</text>
+      <text class="sub" x="690.5" y="73" text-anchor="middle">и карточки компаний</text>
+
+      <polygon class="box" points="795.5,60 853.5,22 911.5,60 853.5,98"/>
+      <text class="t" x="853.5" y="64" text-anchor="middle">Подходит?</text>
+
+      <rect class="box acc" x="945" y="32" width="143" height="56" rx="28"/>
+      <text class="t" x="1016.5" y="56" text-anchor="middle">Выгрузить список</text>
+      <text class="sub" x="1016.5" y="73" text-anchor="middle">или пригласить</text>
+
+      <rect class="box" x="782" y="152" width="143" height="56" rx="6"/>
+      <text class="t" x="853.5" y="176" text-anchor="middle">Уточняет запрос</text>
+      <text class="sub" x="853.5" y="193" text-anchor="middle">фильтры, исключения</text>
+
+      <rect class="box" x="945" y="272" width="143" height="56" rx="6"/>
+      <text class="t" x="1016.5" y="296" text-anchor="middle">Журнал отклика</text>
+      <text class="sub" x="1016.5" y="313" text-anchor="middle">для дообучения</text>
+
+      <!-- номера шагов -->
+      <g>
+        <circle class="badge" cx="140" cy="32" r="10"/><text class="badge-t" x="140" y="36" text-anchor="middle">1</text>
+        <circle class="badge" cx="130" cy="152" r="10"/><text class="badge-t" x="130" y="156" text-anchor="middle">2</text>
+        <circle class="badge" cx="130" cy="272" r="10"/><text class="badge-t" x="130" y="276" text-anchor="middle">3</text>
+        <circle class="badge" cx="293" cy="272" r="10"/><text class="badge-t" x="293" y="276" text-anchor="middle">4</text>
+        <circle class="badge" cx="293" cy="387" r="10"/><text class="badge-t" x="293" y="391" text-anchor="middle">5</text>
+        <circle class="badge" cx="456" cy="272" r="10"/><text class="badge-t" x="456" y="276" text-anchor="middle">6</text>
+        <circle class="badge" cx="619" cy="272" r="10"/><text class="badge-t" x="619" y="276" text-anchor="middle">7</text>
+        <circle class="badge" cx="619" cy="152" r="10"/><text class="badge-t" x="619" y="156" text-anchor="middle">8</text>
+        <circle class="badge" cx="619" cy="32" r="10"/><text class="badge-t" x="619" y="36" text-anchor="middle">9</text>
+        <circle class="badge" cx="853.5" cy="22" r="10"/><text class="badge-t" x="853.5" y="26" text-anchor="middle">10</text>
+        <circle class="badge" cx="955" cy="32" r="10"/><text class="badge-t" x="955" y="36" text-anchor="middle">11</text>
+        <circle class="badge" cx="782" cy="152" r="10"/><text class="badge-t" x="782" y="156" text-anchor="middle">12</text>
+        <circle class="badge" cx="945" cy="272" r="10"/><text class="badge-t" x="945" y="276" text-anchor="middle">13</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Рис. 1. Путь заказчика по дорожкам «кто что делает». Пунктирный жёлтый блок обозначает внешние источники. Цикл 10 → 12 → 7 даёт пересчёт выдачи без повторного поиска кандидатов.</figcaption>
+  </figure>
+
+  <ol class="steps">
+    <li><b class="k">1</b><span><strong>Вход.</strong> Заказчик выбирает лот по <code>lot_id</code> из базы или вставляет текст будущей закупки: позиции, ОКПД2 (если известен), НМЦК, признак «только МСП».</span></li>
+    <li><b class="k">2</b><span><strong>Карточка лота.</strong> Интерфейс показывает распознанные позиции, коды ОКПД2, НМЦК, заказчика и ограничения. Здесь можно поправить код или удалить позицию.</span></li>
+    <li><b class="k">3</b><span><strong>Разбор.</strong> Лемматизация, извлечение ключевых сущностей, предсказание ОКПД2 по тексту, если код не задан.</span></li>
+    <li><b class="k">4</b><span><strong>Кандидаты.</strong> Три канала по истории: совпадение ОКПД2 по уровням, близость эмбеддингов к прошлым лотам, граф «похожие заказчики покупали у…».</span></li>
+    <li><b class="k">5</b><span><strong>Открытые источники.</strong> Новые компании по ОКВЭД и реестрам производителей; реквизиты, статус МСП, финансы, РНП для всех кандидатов.</span></li>
+    <li><b class="k">6</b><span><strong>Фильтры и обогащение.</strong> Отсев по МСП (если <code>is_smp</code>), ликвидации и РНП. Карточки дополняются данными из кеша реестров.</span></li>
+    <li><b class="k">7</b><span><strong>Роль и ранжирование.</strong> Определение роли, расчёт скора 0–100 и статуса, формирование 2–3 причин.</span></li>
+    <li><b class="k">8</b><span><strong>Выдача.</strong> Таблица топ-N: скор, роль, статус, регион, МСП, причины, отметка «новый в пуле».</span></li>
+    <li><b class="k">9</b><span><strong>Изучение.</strong> Заказчик раскрывает карточки контрагентов: реквизиты, ОКВЭД, история закупок, финансы, источники данных.</span></li>
+    <li><b class="k">10</b><span><strong>Решение.</strong> Подходит ли список для дальнейшей работы.</span></li>
+    <li><b class="k">11</b><span><strong>Результат.</strong> Выгрузка в XLSX или список для приглашения к участию.</span></li>
+    <li><b class="k">12</b><span><strong>Уточнение.</strong> Фильтры по роли, региону, МСП, «только новые»; исключение конкретных компаний. Сервис пересчитывает ранжирование.</span></li>
+    <li><b class="k">13</b><span><strong>Отклик.</strong> Отметки «подходит / не подходит / исключить» сохраняются и используются при следующем обучении ранкера.</span></li>
+  </ol>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+  <h2><span class="n">4</span>Исходные данные</h2>
+  <div class="prose">
+    <p>Три выгрузки, CSV с разделителем <code>;</code>, кодировка UTF-8. Связь между ними идёт через <code>lot_id</code>: одно извещение содержит много позиций ТРУ и много записей участников. Процедура и лот соотносятся 1:1, многолотовых закупок в данных нет.</p>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Таблица</th><th class="num">Строк</th><th>Поля</th><th>Бизнес-смысл</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Извещения</strong></td><td class="num">604 452</td><td class="mono">publish_date, procedure_id, lot_id, start_price, reqnum, procedure_name, subject, is_smp, customer_inn, customer_kpp, is_eshop_or_aisgz</td><td>Закупка: дата (08.01.2024–31.12.2025), НМЦК, реестровый номер ЕИС, предмет, признак закупки только у МСП, заказчик, площадка (<code>АИС ГЗ</code> или <code>ЭМ</code>)</td></tr>
+      <tr><td><strong>ТРУ</strong></td><td class="num">2 971 651</td><td class="mono">lot_id, product_name, okpd2_code</td><td>Позиции лота: товар, работа или услуга свободным текстом и код ОКПД2 (8 453 уникальных кода)</td></tr>
+      <tr><td><strong>Поставщики</strong></td><td class="num">1 010 138</td><td class="mono">lot_id, supplier_inn, supplier_kpp, is_winner</td><td>Участники лота и признак победы. 44 199 уникальных ИНН: 10 знаков — юрлицо, 12 — ИП</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Особенности данных, которые влияют на решение</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Наблюдение</th><th>Что делаем</th></tr></thead>
+    <tbody>
+      <tr><td>В АИС ГЗ на лот приходится ≈1,0 записи участника, в ЭМ ≈2,7. Проигравшие есть почти только в ЭМ</td><td>Обучаем и оцениваем раздельно по площадкам; в АИС ГЗ целевое событие «стал контрагентом»</td></tr>
+      <tr><td>У 9% извещений нет ни одного участника; у 6 970 лотов есть участники, но нет победителя</td><td>Исключаем из обучения, оставляем в индексе похожих лотов</td></tr>
+      <tr><td>38% поставщиков победили ровно один раз, у типичного поставщика один заказчик</td><td>Длинный хвост: для редких категорий опираемся на обогащение и внешние реестры</td></tr>
+      <tr><td><code>reqnum</code> заполнен у 70% лотов АИС ГЗ и пуст у ЭМ</td><td>Используем как ключ для дозагрузки данных из ЕИС</td></tr>
+      <tr><td><code>procedure_name</code> и <code>subject</code> совпадают в 98% строк</td><td>Берём одно поле, второе только при расхождении</td></tr>
+      <tr><td>НМЦК: медиана ≈92 тыс. ₽, есть нули и выбросы до 4·10¹⁰ ₽</td><td>Логарифмируем, нули считаем пропуском</td></tr>
+      <tr><td>Около 36 ИНН нестандартной длины (9, 11, 13–15 знаков)</td><td>Проверка контрольной суммы, невалидные помечаем</td></tr>
+      <tr><td>В одном лоте бывает до 7 011 позиций (продукты, лекарства)</td><td>Подбор по позициям и расчёт покрытия лота (ФТ-14)</td></tr>
+      <tr><td>Самые частые классы ОКПД2: 32 медизделия, 21 лекарства, 86 медуслуги, 33 ремонт, 20 химия</td><td>Демо-кейсы берём из этих классов (раздел 10)</td></tr>
+      <tr><td>53% поставщиков зарегистрированы в СПб (ИНН на 78), далее Москва (77) и Ленобласть (47)</td><td>Регион используется как признак и как фильтр</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+  <h2><span class="n">5</span>Функциональные требования</h2>
+  <div class="tw"><table>
+    <thead><tr><th>ID</th><th>Требование</th><th>Приоритет</th></tr></thead>
+    <tbody>
+      <tr><td class="id">ФТ-01</td><td>Загрузка трёх CSV в хранилище с очисткой: проверка ИНН по контрольной сумме, обработка нулевой и аномальной НМЦК, нормализация кодов ОКПД2</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-02</td><td>Профиль поставщика: коды ОКПД2 по уровням, число участий и побед, ценовой коридор, заказчики, дата последней активности</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-03</td><td>Ввод запроса: <code>lot_id</code> из базы или ручной ввод (текст, позиции, ОКПД2, НМЦК, признак МСП)</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-04</td><td>Предсказание ОКПД2 по тексту позиции, если код не указан</td><td><span class="pill want">Желательно</span></td></tr>
+      <tr><td class="id">ФТ-05</td><td>Генерация кандидатов из трёх каналов: ОКПД2, семантическая близость, граф «заказчик — поставщик»</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-06</td><td>Поиск новых компаний в открытых реестрах по ОКПД2 и ОКВЭД, которых нет в исходных данных</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-07</td><td>Обогащение карточки: ЕГРЮЛ/ЕГРИП, реестр МСП, ГИР БО, РНП; для каждого поля хранятся источник и дата получения</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-08</td><td>Жёсткие фильтры: МСП при <code>is_smp = true</code>, действующий статус, отсутствие в РНП</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-09</td><td>Классификация роли (производитель, дистрибьютор, поставщик-исполнитель) с уверенностью и доказательствами</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-10</td><td>Ранжирование: скор 0–100 и статус контрагента по правилам раздела 6</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-11</td><td>Объяснение: 2–3 причины на строку выдачи, раскрываемый список факторов с вкладом</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-12</td><td>Фильтры и сортировка выдачи: роль, статус, регион, МСП, «только новые в пуле»</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-13</td><td>Карточка контрагента: реквизиты, ОКВЭД, история закупок в СПб, финансы, контакты, источники</td><td><span class="pill must">Обязательно</span></td></tr>
+      <tr><td class="id">ФТ-14</td><td>Матрица покрытия для многопозиционных лотов: какую долю позиций закрывает каждый кандидат</td><td><span class="pill want">Желательно</span></td></tr>
+      <tr><td class="id">ФТ-15</td><td>Обратная связь: «подходит», «не подходит», «исключить»; запись в журнал отклика</td><td><span class="pill want">Желательно</span></td></tr>
+      <tr><td class="id">ФТ-16</td><td>Выгрузка выдачи в XLSX вместе с причинами и источниками</td><td><span class="pill want">Желательно</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+  <h2><span class="n">6</span>Методология подбора</h2>
+
+  <h3>6.1 Каналы кандидатов</h3>
+  <div class="grid2">
+    <div class="cell"><h4>ОКПД2 по иерархии</h4><p>Поставщики с тем же кодом, затем с родительскими уровнями: <span class="mono">32.50.13.190 → 32.50.13 → 32.50 → 32</span>. Чем глубже совпадение, тем выше вес.</p></div>
+    <div class="cell"><h4>Семантическая близость</h4><p>Эмбеддинги <code>product_name</code> и <code>subject</code> локальной моделью (multilingual-e5 или bge-m3), ANN-поиск похожих лотов и их участников.</p></div>
+    <div class="cell"><h4>Граф заказчиков</h4><p>Поставщики, работавшие с этим заказчиком или с похожими: тот же тип учреждения, район, набор закупаемых кодов.</p></div>
+    <div class="cell"><h4>Внешние реестры</h4><p>Компании без истории в СПб: ГИСП и реестр промпродукции, реестр медизделий, ГРЛС, ЕГРЮЛ по ОКВЭД, соответствующему ОКПД2.</p></div>
+  </div>
+
+  <h3>6.2 Признаки ранжирования</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Группа</th><th>Признаки</th><th>Источник</th></tr></thead>
+    <tbody>
+      <tr><td>Соответствие предмету</td><td>Глубина совпадения ОКПД2, косинусная близость к истории поставщика, доля позиций лота, которую он покрывает</td><td>ТРУ, эмбеддинги</td></tr>
+      <tr><td>Опыт</td><td>Участия и победы в классе, win-rate, давность последней активности, число разных заказчиков</td><td>Поставщики, Извещения</td></tr>
+      <tr><td>Цена</td><td>Попадание НМЦК в типичный коридор поставщика (лог-шкала, перцентили 10–90)</td><td>Извещения</td></tr>
+      <tr><td>Заказчик</td><td>Работал ли с этим заказчиком, с похожими заказчиками</td><td>Граф</td></tr>
+      <tr><td>Компания</td><td>Регион, МСП, возраст, выручка, численность, роль</td><td>ЕГРЮЛ, МСП, ГИР БО</td></tr>
+      <tr><td>Контекст</td><td>Площадка (ЭМ / АИС ГЗ), признак МСП-закупки, размер лота</td><td>Извещения</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>6.3 Модель</h3>
+  <div class="prose">
+    <ul>
+      <li><strong>Ранкер:</strong> LightGBM LambdaRank, группа = лот. Метки: 2 — победитель, 1 — участник, 0 — кандидаты из каналов, которые не участвовали.</li>
+      <li><strong>Кандидаты без истории:</strong> отдельный контентный скор (ОКВЭД ↔ ОКПД2, наличие в реестре производителей, близость описания деятельности), приведённый к общей шкале 0–100.</li>
+      <li><strong>Объяснение:</strong> SHAP-вклады признаков переводятся в фразы по шаблонам, в выдачу попадают 2–3 крупнейших положительных вклада.</li>
+    </ul>
+  </div>
+
+  <h3>6.4 Роли контрагентов</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Роль</th><th>Правила</th><th>Пример доказательства в карточке</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Производитель</strong></td><td>Основной ОКВЭД в разделе C (10–33), соответствующий ОКПД2 лота; запись в ГИСП, реестре медизделий или ГРЛС</td><td>«ОКВЭД 32.50 — производство медицинских инструментов; найден в реестре промпродукции»</td></tr>
+      <tr><td><strong>Дистрибьютор</strong></td><td>ОКВЭД 46.xx (оптовая торговля); широкий набор разных ОКПД2 в истории; поставки нескольким типам заказчиков</td><td>«ОКВЭД 46.46; поставлял 37 разных кодов класса 21»</td></tr>
+      <tr><td><strong>Поставщик-исполнитель</strong></td><td>ОКВЭД 47.xx или сервисные разделы (33, 43, 81, 86 и др.); работает преимущественно в регионе</td><td>«ОКВЭД 33.12; 12 договоров на ремонт оборудования в СПб»</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">У роли есть уверенность: высокая, если правила по ОКВЭД и по реестру совпали; средняя, если сработало одно правило; низкая, если роль выведена только из истории закупок.</p>
+
+  <h3>6.5 Статусы</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Статус</th><th>Правило присвоения</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Проверенный</strong></td><td>Не менее 3 побед в классе ОКПД2 за последние 12 месяцев, действующий, не в РНП</td></tr>
+      <tr><td><strong>Активный участник</strong></td><td>Участвует в классе, но побед меньше 3 или win-rate ниже медианы класса</td></tr>
+      <tr><td><strong>Новый в пуле</strong></td><td>Нет истории в выгрузке, найден во внешнем реестре по ОКВЭД или продукции</td></tr>
+      <tr><td><strong>Требует проверки</strong></td><td>Компания моложе года, снижение выручки более чем на 50%, отрицательный капитал, ограничения в ЕГРЮЛ</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">Пороги стартовые; уточняем после анализа распределений на данных.</p>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+  <h2><span class="n">7</span>Архитектура</h2>
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 1070 380" role="img" aria-label="Архитектура: офлайн-контур строит хранилище профилей, векторный индекс и граф, обучает ранкер; онлайн-контур на каждый запрос разбирает его, берёт кандидатов из хранилища, обогащает из кеша, ранжирует моделью и возвращает объяснённый ответ; фоновые воркеры наполняют кеш из открытых реестров.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <text class="row-l" x="20" y="18">ОФЛАЙН · ПЕРЕСБОРКА ПО РАСПИСАНИЮ</text>
+      <text class="row-l" x="20" y="158">ОНЛАЙН · НА КАЖДЫЙ ЗАПРОС</text>
+      <text class="row-l" x="20" y="298">ФОНОВЫЕ ЗАДАЧИ</text>
+
+      <!-- офлайн -->
+      <rect class="box" x="20" y="30" width="120" height="56" rx="6"/>
+      <text class="t" x="80" y="54" text-anchor="middle">CSV × 3</text>
+      <text class="sub" x="80" y="71" text-anchor="middle">4,6 млн строк</text>
+      <rect class="box" x="190" y="30" width="160" height="56" rx="6"/>
+      <text class="t" x="270" y="54" text-anchor="middle">ETL и очистка</text>
+      <text class="sub" x="270" y="71" text-anchor="middle">ИНН, цены, ОКПД2</text>
+      <rect class="box" x="400" y="30" width="200" height="56" rx="6"/>
+      <text class="t" x="500" y="54" text-anchor="middle">PostgreSQL + pgvector</text>
+      <text class="sub" x="500" y="71" text-anchor="middle">профили, индекс, граф</text>
+      <rect class="box" x="660" y="30" width="180" height="56" rx="6"/>
+      <text class="t" x="750" y="54" text-anchor="middle">Обучение ранкера</text>
+      <text class="sub" x="750" y="71" text-anchor="middle">LightGBM, сплит по датам</text>
+      <path class="ar" d="M140 58 H188" marker-end="url(#a2)"/>
+      <path class="ar" d="M350 58 H398" marker-end="url(#a2)"/>
+      <path class="ar" d="M600 58 H658" marker-end="url(#a2)"/>
+      <text class="lbl" x="630" y="50" text-anchor="middle">признаки</text>
+
+      <!-- онлайн -->
+      <rect class="box" x="20" y="170" width="120" height="56" rx="6"/>
+      <text class="t" x="80" y="194" text-anchor="middle">Запрос из UI</text>
+      <text class="sub" x="80" y="211" text-anchor="middle">лот или текст</text>
+      <rect class="box" x="170" y="170" width="130" height="56" rx="6"/>
+      <text class="t" x="235" y="194" text-anchor="middle">Разбор запроса</text>
+      <text class="sub" x="235" y="211" text-anchor="middle">ОКПД2, леммы</text>
+      <rect class="box" x="330" y="170" width="130" height="56" rx="6"/>
+      <text class="t" x="395" y="194" text-anchor="middle">Кандидаты</text>
+      <text class="sub" x="395" y="211" text-anchor="middle">3 канала + реестры</text>
+      <rect class="box" x="490" y="170" width="150" height="56" rx="6"/>
+      <text class="t" x="565" y="194" text-anchor="middle">Фильтры, обогащение</text>
+      <text class="sub" x="565" y="211" text-anchor="middle">МСП, РНП, роль</text>
+      <rect class="box" x="670" y="170" width="140" height="56" rx="6"/>
+      <text class="t" x="740" y="194" text-anchor="middle">Ранжирование</text>
+      <text class="sub" x="740" y="211" text-anchor="middle">LambdaRank</text>
+      <rect class="box acc" x="840" y="170" width="170" height="56" rx="6"/>
+      <text class="t" x="925" y="194" text-anchor="middle">Объяснение, ответ</text>
+      <text class="sub" x="925" y="211" text-anchor="middle">SHAP → причины</text>
+      <path class="ar" d="M140 198 H168" marker-end="url(#a2)"/>
+      <path class="ar" d="M300 198 H328" marker-end="url(#a2)"/>
+      <path class="ar" d="M460 198 H488" marker-end="url(#a2)"/>
+      <path class="ar" d="M640 198 H668" marker-end="url(#a2)"/>
+      <path class="ar" d="M810 198 H838" marker-end="url(#a2)"/>
+
+      <!-- связи офлайн → онлайн -->
+      <path class="ar" d="M410 86 V168" marker-end="url(#a2)"/>
+      <text class="lbl" x="416" y="132">ОКПД2, векторы, граф</text>
+      <path class="ar" d="M740 86 V168" marker-end="url(#a2)"/>
+      <text class="lbl" x="746" y="132">веса модели</text>
+      <path class="ar dash" d="M925 170 V58 H842" marker-end="url(#a2)"/>
+      <text class="lbl" x="931" y="132">отклик → дообучение</text>
+
+      <!-- фоновые -->
+      <rect class="box ext" x="20" y="310" width="150" height="56" rx="6"/>
+      <text class="t" x="95" y="334" text-anchor="middle">Открытые реестры</text>
+      <text class="sub" x="95" y="351" text-anchor="middle">ЕГРЮЛ, МСП, ГИСП, ЕИС</text>
+      <rect class="box" x="250" y="310" width="150" height="56" rx="6"/>
+      <text class="t" x="325" y="334" text-anchor="middle">Воркеры обогащения</text>
+      <text class="sub" x="325" y="351" text-anchor="middle">очередь, лимиты</text>
+      <rect class="box" x="490" y="310" width="150" height="56" rx="6"/>
+      <text class="t" x="565" y="334" text-anchor="middle">Кеш карточек</text>
+      <text class="sub" x="565" y="351" text-anchor="middle">источник и дата поля</text>
+      <path class="ar" d="M170 338 H248" marker-end="url(#a2)"/>
+      <text class="lbl" x="209" y="330" text-anchor="middle">ответы</text>
+      <path class="ar" d="M400 338 H488" marker-end="url(#a2)"/>
+      <text class="lbl" x="444" y="330" text-anchor="middle">запись</text>
+      <path class="ar" d="M600 310 V228" marker-end="url(#a2)"/>
+      <text class="lbl" x="606" y="272">карточки</text>
+      <path class="ar dash" d="M515 226 V265 H325 V308" marker-end="url(#a2)"/>
+      <text class="lbl" x="335" y="258">промах кеша → в очередь</text>
+    </svg>
+    </div>
+    <figcaption>Рис. 2. Офлайн-контур готовит индексы и модель, онлайн-контур отвечает на запрос за секунды, фоновые воркеры наполняют кеш карточек из реестров. При промахе кеша ответ не блокируется: карточка догружается в фоне.</figcaption>
+  </figure>
+
+  <div class="tw"><table>
+    <thead><tr><th>Компонент</th><th>Технология</th><th>Назначение</th></tr></thead>
+    <tbody>
+      <tr><td>ETL</td><td>Python 3.12, polars, Parquet</td><td>Загрузка и очистка CSV, расчёт профилей поставщиков</td></tr>
+      <tr><td>Хранилище</td><td>PostgreSQL 16 + pgvector</td><td>Лоты, позиции, профили, граф, векторы</td></tr>
+      <tr><td>Эмбеддинги</td><td>sentence-transformers, multilingual-e5-base или bge-m3, локально</td><td>Векторы позиций и предметов закупок</td></tr>
+      <tr><td>Тексты</td><td>pymorphy3, razdel</td><td>Лемматизация, токенизация</td></tr>
+      <tr><td>Ранкер</td><td>LightGBM, SHAP</td><td>Ранжирование и вклады признаков</td></tr>
+      <tr><td>Обогащение</td><td>Redis, RQ, httpx</td><td>Очередь, воркеры, кеш ответов реестров</td></tr>
+      <tr><td>API</td><td>FastAPI</td><td>Эндпойнты раздела 8</td></tr>
+      <tr><td>Интерфейс</td><td>React + Vite, TanStack Table</td><td>Экраны лота, выдачи и карточки</td></tr>
+      <tr><td>Развёртывание</td><td>Docker Compose</td><td>Запуск всего стенда одной командой</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+  <h2><span class="n">8</span>API</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Метод</th><th>Путь</th><th>Назначение</th></tr></thead>
+    <tbody>
+      <tr><td class="id">GET</td><td class="mono">/api/lots/{lot_id}</td><td>Карточка лота: позиции, ОКПД2, НМЦК, заказчик, ограничения</td></tr>
+      <tr><td class="id">GET</td><td class="mono">/api/lots/search?q=</td><td>Поиск лота по тексту, номеру или заказчику</td></tr>
+      <tr><td class="id">POST</td><td class="mono">/api/recommendations</td><td>Ранжированная выдача по лоту или ручному запросу</td></tr>
+      <tr><td class="id">GET</td><td class="mono">/api/suppliers/{inn}</td><td>Карточка контрагента с источниками полей</td></tr>
+      <tr><td class="id">POST</td><td class="mono">/api/feedback</td><td>Отметка по строке выдачи</td></tr>
+      <tr><td class="id">GET</td><td class="mono">/api/export/{request_id}.xlsx</td><td>Выгрузка выдачи</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">Пример запроса и ответа. Значения иллюстративные, ИНН условный.</p>
+<pre>POST /api/recommendations
+{
+  "lot_id": 4760042,              // или "query": {"text": "...", "okpd2": ["27.51.28.130"], "start_price": 250000, "is_smp": true}
+  "filters": {"roles": ["manufacturer", "distributor"], "regions": ["78", "47"], "only_new": false},
+  "top_n": 50
+}
+
+200 OK
+{
+  "request_id": "r_01J9X",
+  "lot": {"lot_id": 4760042, "okpd2": ["27.51.28.130"], "start_price": 250000.0, "is_smp": true},
+  "items": [
+    {
+      "inn": "7800000000", "name": "ООО «Пример»", "score": 87,
+      "role":   {"value": "distributor", "confidence": "high",
+                 "evidence": ["ОКВЭД 46.43", "поставлял 14 разных кодов класса 27"]},
+      "status": {"value": "verified", "rule": "≥3 побед в классе 27.51 за 12 мес."},
+      "reasons": ["Выиграл 9 лотов с ОКПД2 27.51 в 2025 г.",
+                  "НМЦК в его типичном диапазоне 120–600 тыс. ₽",
+                  "Работал с 4 школами Выборгского района"],
+      "is_new_to_pool": false, "is_smp": true, "region": "78",
+      "sources": [{"field": "okved", "source": "ЕГРЮЛ", "fetched_at": "2026-10-01"}]
+    }
+  ],
+  "enrichment_pending": 3
+}</pre>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+  <h2><span class="n">9</span>Нефункциональные требования</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Характеристика</th><th>Требование</th></tr></thead>
+    <tbody>
+      <tr><td>Время ответа</td><td>Не более 3 с на топ-50 для лота из базы при прогретом кеше. При холодном обогащении выдача по истории приходит сразу, карточки догружаются в течение 15 с</td></tr>
+      <tr><td>Объём</td><td>600 тыс. лотов, 3 млн позиций, 44 тыс. поставщиков плюс внешние компании без деградации времени ответа</td></tr>
+      <tr><td>Масштабирование</td><td>API и воркеры без состояния, масштабируются горизонтально; индекс и модель пересобираются офлайн и подменяются атомарно</td></tr>
+      <tr><td>Развёртывание</td><td><code>docker compose up</code> поднимает стенд, отдельный скрипт загружает данные и строит индексы</td></tr>
+      <tr><td>Нейросети</td><td>Только локальные модели, веса внутри образа, без обращений к внешним API нейросетей</td></tr>
+      <tr><td>Достоверность</td><td>У каждого обогащённого поля есть источник и дата; расхождения между источниками показываются в карточке</td></tr>
+      <tr><td>Устойчивость</td><td>Недоступность реестра не ломает выдачу: карточка помечается «не обогащено», запрос повторяется в фоне</td></tr>
+      <tr><td>Наблюдаемость</td><td>Журнал запросов, времени ответа по этапам, ошибок источников и отметок пользователей</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+  <h2><span class="n">10</span>Оценка качества и приёмка</h2>
+  <h3>10.1 Офлайн-оценка</h3>
+  <div class="prose">
+    <ul>
+      <li><strong>Сплит по времени:</strong> индексы и обучение на лотах с 08.01.2024 по 30.06.2025, тест на лотах с 01.07.2025 по 31.12.2025.</li>
+      <li><strong>Цель:</strong> для каждого тестового лота реальный победитель (и участники для ЭМ) должен оказаться в топ-K выдачи.</li>
+      <li><strong>Метрики:</strong> Recall@10, Recall@50, NDCG@10, MRR.</li>
+      <li><strong>Срезы:</strong> ЭМ и АИС ГЗ; частые и редкие ОКПД2; МСП-закупки; новые для заказчика поставщики.</li>
+      <li><strong>Бейзлайн:</strong> «самые частые победители по коду ОКПД2». Решение должно превзойти его на всех срезах.</li>
+      <li><strong>Обогащение:</strong> доля кандидатов с заполненными ОКВЭД, МСП и финансами; точность роли на ручной выборке из 100 компаний.</li>
+    </ul>
+  </div>
+  <h3>10.2 Реальные кейсы для демо</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Кейс</th><th>Класс ОКПД2</th><th>Что показываем</th></tr></thead>
+    <tbody>
+      <tr><td>Медицинские изделия</td><td class="mono">32</td><td>Производители из реестра медизделий рядом с дистрибьюторами</td></tr>
+      <tr><td>Лекарственные препараты</td><td class="mono">21</td><td>Роли «производитель» и «дистрибьютор», данные ГРЛС</td></tr>
+      <tr><td>Продукты питания, сотни позиций</td><td class="mono">10</td><td>Матрица покрытия позиций</td></tr>
+      <tr><td>Ремонт оборудования</td><td class="mono">33</td><td>Локальные исполнители, история с заказчиком</td></tr>
+      <tr><td>Программное обеспечение</td><td class="mono">58</td><td>Правообладатели и реселлеры</td></tr>
+      <tr><td>Ручной текст без кода</td><td>—</td><td>Предсказание ОКПД2 и выдача по тексту</td></tr>
+      <tr><td>Закупка только у МСП</td><td>любой</td><td>Работа жёсткого фильтра, статус «Новый в пуле»</td></tr>
+    </tbody>
+  </table></div>
+  <h3>10.3 Чек-лист приёмки</h3>
+  <ul class="check prose">
+    <li>Стенд поднимается с нуля одной командой, данные загружаются скриптом</li>
+    <li>Для любого из демо-лотов выдача приходит быстрее 3 с</li>
+    <li>В каждой строке выдачи есть скор, роль, статус и не меньше двух причин</li>
+    <li>В выдаче по каждому демо-кейсу есть хотя бы одна компания со статусом «Новый в пуле»</li>
+    <li>Карточка контрагента показывает источник и дату каждого поля</li>
+    <li>Таблица метрик против бейзлайна готова для презентации</li>
+    <li>Ни один компонент не обращается к внешним API нейросетей</li>
+  </ul>
+</section>
+
+<!-- 11 -->
+<section id="s11">
+  <h2><span class="n">11</span>План реализации</h2>
+  <div class="prose"><p>Четыре параллельных направления работают в пяти фазах. Переход между фазами проходит через контрольную точку (Г1–Г4). Главная точка — Г3: после неё сквозной поток работает, и остаток времени уходит на качество.</p></div>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 1060 492" role="img" aria-label="План реализации: четыре направления (данные и ML, обогащение, бэкенд, фронтенд) в пяти фазах от старта до демо, разделённых контрольными точками Г1–Г4; ключевая точка Г3 — сквозной поток работает.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="head" d="M0 0 L10 5 L0 10 z"/></marker>
+      </defs>
+      <!-- фазы -->
+      <text class="phase" x="222" y="22" text-anchor="middle">Ф0 · Старт</text><text class="hrs" x="222" y="40" text-anchor="middle">0–2 ч</text>
+      <text class="phase" x="406" y="22" text-anchor="middle">Ф1 · Основа</text><text class="hrs" x="406" y="40" text-anchor="middle">2–8 ч</text>
+      <text class="phase" x="590" y="22" text-anchor="middle">Ф2 · Сквозной поток</text><text class="hrs" x="590" y="40" text-anchor="middle">8–16 ч</text>
+      <text class="phase" x="774" y="22" text-anchor="middle">Ф3 · Качество</text><text class="hrs" x="774" y="40" text-anchor="middle">16–24 ч</text>
+      <text class="phase" x="958" y="22" text-anchor="middle">Ф4 · Демо и защита</text><text class="hrs" x="958" y="40" text-anchor="middle">24–30 ч</text>
+
+      <!-- дорожки -->
+      <rect class="lane" x="0" y="52" width="1060" height="100"/>
+      <rect class="lane2" x="0" y="152" width="1060" height="100"/>
+      <rect class="lane" x="0" y="252" width="1060" height="100"/>
+      <rect class="lane2" x="0" y="352" width="1060" height="100"/>
+      <text class="lane-l" x="12" y="98">Данные и ML</text>
+      <text class="lane-l" x="12" y="198">Обогащение</text>
+      <text class="lane-l" x="12" y="298">Бэкенд</text>
+      <text class="lane-l" x="12" y="398">Фронтенд</text>
+
+      <!-- контрольные точки -->
+      <line class="gate" x1="314" y1="52" x2="314" y2="452"/>
+      <line class="gate" x1="498" y1="52" x2="498" y2="452"/>
+      <line class="gate acc" x1="682" y1="52" x2="682" y2="452"/>
+      <line class="gate" x1="866" y1="52" x2="866" y2="452"/>
+      <polygon class="gd" points="314,452 323,462 314,472 305,462"/><text class="lbl" x="314" y="488" text-anchor="middle">Г1</text>
+      <polygon class="gd" points="498,452 507,462 498,472 489,462"/><text class="lbl" x="498" y="488" text-anchor="middle">Г2</text>
+      <polygon class="gd acc" points="682,452 691,462 682,472 673,462"/><text class="lbl" x="682" y="488" text-anchor="middle">Г3</text>
+      <polygon class="gd" points="866,452 875,462 866,472 857,462"/><text class="lbl" x="866" y="488" text-anchor="middle">Г4</text>
+
+      <!-- Данные и ML -->
+      <rect class="box" x="140" y="69" width="164" height="66" rx="6"/>
+      <text x="222" y="98" text-anchor="middle">Parquet, чистка ИНН</text><text class="sub" x="222" y="116" text-anchor="middle">профилирование</text>
+      <rect class="box" x="324" y="69" width="164" height="66" rx="6"/>
+      <text x="406" y="98" text-anchor="middle">Профили поставщиков</text><text class="sub" x="406" y="116" text-anchor="middle">бейзлайн по ОКПД2</text>
+      <rect class="box" x="508" y="69" width="164" height="66" rx="6"/>
+      <text x="590" y="98" text-anchor="middle">Эмбеддинги, индекс</text><text class="sub" x="590" y="116" text-anchor="middle">кандидаты из 3 каналов</text>
+      <rect class="box" x="692" y="69" width="164" height="66" rx="6"/>
+      <text x="774" y="98" text-anchor="middle">LambdaRank, SHAP</text><text class="sub" x="774" y="116" text-anchor="middle">метрики по срезам</text>
+      <rect class="box" x="876" y="69" width="164" height="66" rx="6"/>
+      <text x="958" y="98" text-anchor="middle">Таблица метрик</text><text class="sub" x="958" y="116" text-anchor="middle">для презентации</text>
+
+      <!-- Обогащение -->
+      <rect class="box" x="140" y="169" width="164" height="66" rx="6"/>
+      <text x="222" y="198" text-anchor="middle">Список реестров</text><text class="sub" x="222" y="216" text-anchor="middle">проверка доступа</text>
+      <rect class="box" x="324" y="169" width="164" height="66" rx="6"/>
+      <text x="406" y="198" text-anchor="middle">Клиенты ЕГРЮЛ, МСП</text><text class="sub" x="406" y="216" text-anchor="middle">кеш ответов</text>
+      <rect class="box" x="508" y="169" width="164" height="66" rx="6"/>
+      <text x="590" y="198" text-anchor="middle">ГИСП, реестр РУ</text><text class="sub" x="590" y="216" text-anchor="middle">новые компании</text>
+      <rect class="box" x="692" y="169" width="164" height="66" rx="6"/>
+      <text x="774" y="198" text-anchor="middle">Классификатор роли</text><text class="sub" x="774" y="216" text-anchor="middle">достоверность полей</text>
+      <rect class="box" x="876" y="169" width="164" height="66" rx="6"/>
+      <text x="958" y="198" text-anchor="middle">Прогрев кеша</text><text class="sub" x="958" y="216" text-anchor="middle">для демо-лотов</text>
+
+      <!-- Бэкенд -->
+      <rect class="box" x="140" y="269" width="164" height="66" rx="6"/>
+      <text x="222" y="298" text-anchor="middle">Схема БД</text><text class="sub" x="222" y="316" text-anchor="middle">docker compose</text>
+      <rect class="box" x="324" y="269" width="164" height="66" rx="6"/>
+      <text x="406" y="298" text-anchor="middle">API лота и поиска</text><text class="sub" x="406" y="316" text-anchor="middle">заглушка выдачи</text>
+      <rect class="box acc" x="508" y="269" width="164" height="66" rx="6"/>
+      <text x="590" y="298" text-anchor="middle">/recommendations</text><text class="sub" x="590" y="316" text-anchor="middle">сквозной поток</text>
+      <rect class="box" x="692" y="269" width="164" height="66" rx="6"/>
+      <text x="774" y="298" text-anchor="middle">Отклик, экспорт</text><text class="sub" x="774" y="316" text-anchor="middle">кеш, таймауты</text>
+      <rect class="box" x="876" y="269" width="164" height="66" rx="6"/>
+      <text x="958" y="298" text-anchor="middle">Стабилизация</text><text class="sub" x="958" y="316" text-anchor="middle">прогон на чистом стенде</text>
+
+      <!-- Фронтенд -->
+      <rect class="box" x="140" y="369" width="164" height="66" rx="6"/>
+      <text x="222" y="398" text-anchor="middle">Макет трёх экранов</text><text class="sub" x="222" y="416" text-anchor="middle">лот, выдача, карточка</text>
+      <rect class="box" x="324" y="369" width="164" height="66" rx="6"/>
+      <text x="406" y="398" text-anchor="middle">Карточка лота</text><text class="sub" x="406" y="416" text-anchor="middle">на моках API</text>
+      <rect class="box acc" x="508" y="369" width="164" height="66" rx="6"/>
+      <text x="590" y="398" text-anchor="middle">Выдача топ-N</text><text class="sub" x="590" y="416" text-anchor="middle">с причинами</text>
+      <rect class="box" x="692" y="369" width="164" height="66" rx="6"/>
+      <text x="774" y="398" text-anchor="middle">Карточка контрагента</text><text class="sub" x="774" y="416" text-anchor="middle">фильтры, отметки</text>
+      <rect class="box" x="876" y="369" width="164" height="66" rx="6"/>
+      <text x="958" y="398" text-anchor="middle">Полировка UX</text><text class="sub" x="958" y="416" text-anchor="middle">сценарий показа</text>
+
+      <!-- стрелки внутри дорожек -->
+      <g>
+        <path class="ar" d="M304 102 H322" marker-end="url(#a3)"/><path class="ar" d="M488 102 H506" marker-end="url(#a3)"/><path class="ar" d="M672 102 H690" marker-end="url(#a3)"/><path class="ar" d="M856 102 H874" marker-end="url(#a3)"/>
+        <path class="ar" d="M304 202 H322" marker-end="url(#a3)"/><path class="ar" d="M488 202 H506" marker-end="url(#a3)"/><path class="ar" d="M672 202 H690" marker-end="url(#a3)"/><path class="ar" d="M856 202 H874" marker-end="url(#a3)"/>
+        <path class="ar" d="M304 302 H322" marker-end="url(#a3)"/><path class="ar" d="M488 302 H506" marker-end="url(#a3)"/><path class="ar" d="M672 302 H690" marker-end="url(#a3)"/><path class="ar" d="M856 302 H874" marker-end="url(#a3)"/>
+        <path class="ar" d="M304 402 H322" marker-end="url(#a3)"/><path class="ar" d="M488 402 H506" marker-end="url(#a3)"/><path class="ar" d="M672 402 H690" marker-end="url(#a3)"/><path class="ar" d="M856 402 H874" marker-end="url(#a3)"/>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Рис. 3. Часы отсчитываются от старта работы и рассчитаны примерно на 30 рабочих часов; сверим с расписанием организаторов. Выделенные блоки в Ф2 составляют критический путь к Г3.</figcaption>
+  </figure>
+
+  <div class="tw"><table>
+    <thead><tr><th>Точка</th><th>Условие прохождения</th><th>Если не выполнено</th></tr></thead>
+    <tbody>
+      <tr><td class="id">Г1</td><td>Данные загружены в базу, контракт API (раздел 8) согласован, макеты экранов утверждены</td><td>Фронтенд работает на JSON-заглушках, бэкенд догружает данные параллельно</td></tr>
+      <tr><td class="id">Г2</td><td>Профили поставщиков построены, бейзлайн Recall@K посчитан на временном сплите</td><td>Сужаем оценку до ЭМ, где есть проигравшие участники</td></tr>
+      <tr><td class="id">Г3</td><td>Лот из базы проходит путь «запрос → кандидаты → обогащение → выдача с причинами» в интерфейсе</td><td>Ранжирование временно по правилам, LambdaRank подключаем в Ф3</td></tr>
+      <tr><td class="id">Г4</td><td>Заморозка функций: новые возможности не добавляются, только исправления и подготовка демо</td><td>Желательные ФТ переносятся в слайд «развитие»</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Распределение ролей в команде</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Роль</th><th>Зона ответственности</th></tr></thead>
+    <tbody>
+      <tr><td>Data / ML</td><td>ETL, профили, эмбеддинги, ранкер, метрики</td></tr>
+      <tr><td>Обогащение</td><td>Клиенты реестров, кеш, классификатор роли, статусы</td></tr>
+      <tr><td>Бэкенд</td><td>Схема БД, API, очередь, Docker, стабильность стенда</td></tr>
+      <tr><td>Фронтенд</td><td>Три экрана, фильтры, карточка, выгрузка</td></tr>
+      <tr><td>Капитан (совмещает)</td><td>Контрольные точки, выбор демо-кейсов, презентация и сценарий защиты</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Сценарий защиты</h3>
+  <ol class="prose">
+    <li>Проблема заказчика и цифры по данным: 600 тыс. лотов, длинный хвост поставщиков.</li>
+    <li>Живое демо: лот медизделий → выдача → карточка производителя «Новый в пуле» → выгрузка.</li>
+    <li>Ручной текст без ОКПД2 и МСП-закупка.</li>
+    <li>Таблица метрик против бейзлайна, по срезам.</li>
+    <li>Архитектура и масштабирование (рис. 2), соблюдение запрета на внешние нейросети.</li>
+    <li>Развитие: журнал отклика, интеграция в АИС ГЗ и ЭМ.</li>
+  </ol>
+</section>
+
+<!-- 12 -->
+<section id="s12">
+  <h2><span class="n">12</span>Риски и открытые вопросы</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Риск</th><th>Мера</th></tr></thead>
+    <tbody>
+      <tr><td>Реестры ограничивают частоту запросов или недоступны с площадки</td><td>Кеш, заранее прогретый по демо-лотам; офлайн-выгрузки открытых данных ФНС</td></tr>
+      <tr><td>Полный расчёт эмбеддингов для 3 млн позиций не укладывается во время</td><td>Эмбеддинги для уникальных названий (≈1,1 млн), малая модель, батчи на GPU, если она есть</td></tr>
+      <tr><td>Асимметрия АИС ГЗ и ЭМ искажает метрики</td><td>Отдельные метрики по площадкам, честное описание в отчёте</td></tr>
+      <tr><td>Ошибочная роль компании</td><td>Уровень уверенности и доказательства в карточке; ручная проверка выборки</td></tr>
+      <tr><td>Не успеваем с ранкером</td><td>Правило-ориентированный скор как запасной вариант после Г3</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Вопросы организаторам</h3>
+  <ul class="prose">
+    <li>Разрешены ли локальные языковые модели и модели эмбеддингов?</li>
+    <li>Как оценивается качество рекомендаций: на отложенных кейсах организаторов или экспертно?</li>
+    <li>Можно ли использовать коммерческие сервисы данных о компаниях (не нейросетевые) или только государственные реестры?</li>
+    <li>Почему в АИС ГЗ почти нет проигравших участников: так устроена выгрузка или это особенность процедур?</li>
+    <li>Будет ли у жюри доступ к нашему стенду или защита идёт только в формате живого показа?</li>
+  </ul>
+</section>
+
+<footer>ТЗ-ПК-01, редакция 0.1 от 01.10.2026. Цифры по данным получены из выгрузок <span class="mono">Извещения_24-25.csv</span>, <span class="mono">ТРУ_24-25.csv</span>, <span class="mono">Поставщики_24-25.csv</span>.</footer>
+</main>
+</div>
