@@ -171,7 +171,7 @@ def cmd_history_load(args) -> None:
     rebuild_all(engine, {r.inn for r in results})
 
 
-EXPORT_EXTRA = ["okved_main_name", "smp_since", "employees_as_of", "taxes_paid_as_of", "revenue_tax",
+EXPORT_EXTRA = ["okved_main_name", "reg_year", "smp_since", "employees_as_of", "taxes_paid_as_of", "revenue_tax",
                 "hist_lots", "hist_wins", "hist_customers", "hist_okpd2_codes", "hist_okpd2_classes",
                 "hist_last_date", "hist_class_codes", "finance_by_year"]
 

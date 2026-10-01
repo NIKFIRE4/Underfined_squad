@@ -428,3 +428,16 @@ def test_api_supplier(db_url, monkeypatch):
         b = client.post("/api/suppliers/batch", json={"inns": [INN, "123"]}).json()["items"]
         assert b[0]["inn"] == INN and "error" in b[1]
         assert client.get("/api/health").json()["companies_in_db"] >= 1
+
+
+def test_age_from_ogrn():
+    from datetime import date as _d
+    assert card.ogrn_year("1099847036750") == 2009
+    assert card.ogrn_year("316784700083119") == 2016  # ОГРНИП
+    assert card.ogrn_year("123") is None
+    row, _ = card.build_company("7804428656", [_fact("ogrn", "1099847036750", "fns_rsmp")], {"fns_rsmp": "ok"})
+    assert row["age_source"] == "ogrn" and row["reg_year"] == 2009
+    assert abs(row["age_years"] - (_d.today() - _d(2009, 7, 1)).days / 365.25) < 0.01
+    exact, _ = card.build_company("7804428656", [_fact("ogrn", "1099847036750", "fns_rsmp"),
+                                                _fact("reg_date", "2009-12-22", "egrul")], {"egrul": "ok"})
+    assert exact["age_source"] == "reg_date"  # точная дата приоритетнее оценки
