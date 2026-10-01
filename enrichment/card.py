@@ -56,6 +56,17 @@ def _years_since(iso: str | None) -> float | None:
         return None
 
 
+def ogrn_year(ogrn: str | None) -> int | None:
+    """Год присвоения ОГРН: 2-я и 3-я цифры (ОГРН юрлица — 13 цифр, ОГРНИП — 15).
+    Для компаний старше 2002 года это год перерегистрации, то есть нижняя граница возраста."""
+    s = (ogrn or "").strip()
+    if not s.isdigit() or len(s) not in (13, 15):
+        return None
+    yy = int(s[1:3])
+    year = 2000 + yy if yy <= date.today().year % 100 else 1900 + yy
+    return year if year >= 2002 else None
+
+
 def _prev_tax_revenue(by_year: dict | None, last_year: Any) -> float | None:
     if not by_year or last_year is None:
         return None
@@ -69,7 +80,8 @@ def risk_flags(c: dict) -> list[dict]:
         flags.append({"code": code, "text": text})
 
     if c.get("age_years") is not None and c["age_years"] < YOUNG_YEARS:
-        add("young", f"Компания моложе года (с {c['reg_date']})")
+        since = c.get("reg_date") or f"{c.get('reg_year')} г., оценка по ОГРН"
+        add("young", f"Компания моложе года (с {since})")
     rev, prev = c.get("revenue"), c.get("revenue_prev")
     if rev is not None and prev and prev > 0 and rev < prev * (1 - REVENUE_DROP):
         add("revenue_drop", f"Выручка упала на {round((1 - rev / prev) * 100)}% к прошлому году")
@@ -131,6 +143,12 @@ def build_company(inn: str, facts: list[Fact], runs: dict[str, str]) -> tuple[di
     else:
         c["is_active"] = None
     c["age_years"] = _years_since(c.get("reg_date"))
+    c["age_source"] = "reg_date" if c["age_years"] is not None else None
+    if c["age_years"] is None and (year := ogrn_year(c.get("ogrn"))):
+        # точной даты нет (ЕГРЮЛ/ПБ не запрашивались) — год из ОГРН, считаем от середины года
+        c["reg_year"] = year
+        c["age_years"] = _years_since(f"{year}-07-01")
+        c["age_source"] = "ogrn"
 
     flags = risk_flags(c)
     c["risk_flags"] = flags

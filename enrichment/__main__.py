@@ -171,6 +171,80 @@ def cmd_history_load(args) -> None:
     rebuild_all(engine, {r.inn for r in results})
 
 
+EXPORT_EXTRA = ["okved_main_name", "reg_year", "smp_since", "employees_as_of", "taxes_paid_as_of", "revenue_tax",
+                "hist_lots", "hist_wins", "hist_customers", "hist_okpd2_codes", "hist_okpd2_classes",
+                "hist_last_date", "hist_class_codes", "finance_by_year"]
+
+
+def _csv_value(v):
+    """Как в выгрузках организаторов: true/false; списки и словари — JSON; None — пустая ячейка."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, ensure_ascii=False)
+    return v
+
+
+def cmd_export_csv(args) -> None:
+    """Плоская таблица по всем ИНН для pandas/polars: join с исходными данными по inn."""
+    engine = _engine(args.db)
+    facts, runs = storage.load_all(engine)
+    cols = list(dict.fromkeys([c.name for c in storage.companies.columns if c.name != "updated_at"] + EXPORT_EXTRA + [
+        "role", "role_label", "role_confidence", "role_evidence", "risk_flag_codes"]))
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for inn in sorted(i for i in facts if is_valid_inn(i)):
+        row, card = build_company(inn, facts[inn], runs.get(inn, {}))
+        full = row | {k: v["value"] for k, v in card.items() if k not in row}
+        role = discovery.classify_role(full)
+        full |= {"role": role["value"], "role_label": role["label"], "role_confidence": role["confidence"],
+                 "role_evidence": " | ".join(role["evidence"]),
+                 "risk_flag_codes": ",".join(fl["code"] for fl in row.get("risk_flags") or [])}
+        rows.append({k: _csv_value(v) for k, v in full.items() if k in cols})
+    with open(args.out, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols, delimiter=";", quoting=csv.QUOTE_MINIMAL, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    log.info("CSV: %s, %d строк, %d колонок", args.out, len(rows), len(cols))
+    if not args.no_xlsx:
+        _write_xlsx(Path(args.out).with_suffix(".xlsx"), cols, rows)
+
+
+TEXT_COLS = {"inn", "ogrn", "kpp", "region_code", "okved_main"}  # в Excel — только текстом, иначе 1,01E+10
+
+
+def _write_xlsx(path: Path, cols: list[str], rows: list[dict]) -> None:
+    """Для людей: Excel открывает CSV не в UTF-8 и превращает ИНН в числа — XLSX этих проблем не имеет."""
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.styles import Font
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Компании")
+    ws.freeze_panes = "B2"
+    bold = Font(bold=True)
+    head = []
+    for c in cols:
+        cell = WriteOnlyCell(ws, value=c)
+        cell.font = bold
+        head.append(cell)
+    ws.append(head)
+
+    def typed(col, v):
+        if v is None or v == "":
+            return None
+        if col in TEXT_COLS or not isinstance(v, (int, float)):
+            if v in ("true", "false"):
+                return v == "true"
+            return str(v)[:32000]  # лимит ячейки Excel
+        return v
+
+    for r in rows:
+        ws.append([typed(c, r.get(c)) for c in cols])
+    wb.save(path)
+    log.info("XLSX: %s", path)
+
+
 def rebuild_all(engine, inns: set[str] | None = None) -> None:
     facts, runs = storage.load_all(engine, inns)
     rows = [build_company(inn, facts.get(inn, []), runs.get(inn, {}))[0] for inn in runs]
@@ -239,6 +313,9 @@ def main() -> None:
     dc.add_argument("--only-smp", action="store_true")
     dc.add_argument("--include-known", action="store_true", help="не исключать поставщиков из истории")
     dc.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    ex = sub.add_parser("export-csv", help="выгрузить обогащённые компании в CSV (разделитель ;)")
+    ex.add_argument("--out", default="data/companies_enriched.csv")
+    ex.add_argument("--no-xlsx", action="store_true", help="не писать копию .xlsx для Excel")
     sub.add_parser("rebuild", help="пересобрать витрину companies из фактов")
 
     s = sub.add_parser("show")
@@ -266,6 +343,8 @@ def main() -> None:
         cmd_history_load(args)
     elif args.cmd == "discover":
         cmd_discover(args)
+    elif args.cmd == "export-csv":
+        cmd_export_csv(args)
     elif args.cmd == "rebuild":
         rebuild_all(_engine(args.db))
     else:

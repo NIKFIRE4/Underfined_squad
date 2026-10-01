@@ -62,6 +62,7 @@ companies = Table(
     Column("reg_date", String(10)),
     Column("liquidation_date", String(10)),
     Column("age_years", Float),
+    Column("age_source", Text),  # reg_date — точная дата ЕГРЮЛ/ПБ; ogrn — год из ОГРН (оценка)
     Column("director", JSON),
     Column("okved_main", Text),
     Column("okved_main_name", Text),
