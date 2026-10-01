@@ -22,7 +22,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from . import fns_dumps, storage
+from . import discovery, fns_dumps, registries, storage
 from .card import build_company
 from .http import Http
 from .inn import is_valid_inn
@@ -122,9 +122,41 @@ def cmd_fns_load(args) -> None:
     targets = set(args.inns or supplier_inns(args.suppliers))
     for name in args.datasets:
         t0 = time.monotonic()
-        storage.save_results(engine, fns_dumps.load(fns_dumps.DATASETS[name], targets))
+        if name == "rsmp":
+            storage.clear_pool(engine)
+            results = fns_dumps.load_rsmp(targets, lambda c, k: storage.insert_pool_chunk(engine, c, k))
+        else:
+            results = fns_dumps.load(fns_dumps.DATASETS[name], targets)
+        storage.save_results(engine, results)
         log.info("%s: сохранено за %.0f с", name, time.monotonic() - t0)
     rebuild_all(engine, targets)
+
+
+def cmd_registries_load(args) -> None:
+    engine = _engine(args.db)
+    targets = set(args.inns or supplier_inns(args.suppliers))
+    paths = {"gisp": args.gisp, "software": args.software}
+    for name in registries.REGISTRIES:
+        results, items = registries.load(name, targets, paths[name])
+        if not items:
+            continue
+        storage.replace_registry(engine, name, items)
+        storage.save_results(engine, results)
+        log.info("%s: %d позиций по ОКПД2, совпало с поставщиками %d",
+                 name, len(items), sum(1 for r in results if any(f.value is True for f in r.facts)))
+    rebuild_all(engine, targets)
+
+
+def cmd_discover(args) -> None:
+    engine = _engine(args.db)
+    exclude = set() if args.include_known else set(supplier_inns(args.suppliers))
+    found = discovery.find_new_companies(
+        engine, args.okpd2, regions=set(args.regions) if args.regions else None,
+        exclude=exclude, only_smp=args.only_smp, limit=args.limit)
+    for c in found:
+        print(f"{c.score:5.1f}  {c.inn:<12} {c.region_code or '':<3} {(c.name or '')[:50]:<50} "
+              f"{c.evidence[0]['text'][:90]}")
+    log.info("найдено %d новых компаний", len(found))
 
 
 def rebuild_all(engine, inns: set[str] | None = None) -> None:
@@ -179,6 +211,18 @@ def main() -> None:
     fl.add_argument("inns", nargs="*")
     fl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     fl.add_argument("--datasets", type=lambda s: s.split(","), default=datasets)
+    rl = sub.add_parser("registries-load", help="РРПП (ПП 719) и реестр ПО из файлов в dataset/")
+    rl.add_argument("inns", nargs="*")
+    rl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    rl.add_argument("--gisp", help=f"по умолчанию {registries.GISP_PATH}")
+    rl.add_argument("--software", help=f"по умолчанию {registries.SOFTWARE_GLOB}")
+    dc = sub.add_parser("discover", help="новые компании по ОКПД2 лота (ФТ-06)")
+    dc.add_argument("okpd2", nargs="+")
+    dc.add_argument("--regions", type=lambda s: s.split(","), default=["78", "47"])
+    dc.add_argument("--limit", type=int, default=20)
+    dc.add_argument("--only-smp", action="store_true")
+    dc.add_argument("--include-known", action="store_true", help="не исключать поставщиков из истории")
+    dc.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     sub.add_parser("rebuild", help="пересобрать витрину companies из фактов")
 
     s = sub.add_parser("show")
@@ -200,6 +244,10 @@ def main() -> None:
         cmd_fns_download(args)
     elif args.cmd == "fns-load":
         cmd_fns_load(args)
+    elif args.cmd == "registries-load":
+        cmd_registries_load(args)
+    elif args.cmd == "discover":
+        cmd_discover(args)
     elif args.cmd == "rebuild":
         rebuild_all(_engine(args.db))
     else:

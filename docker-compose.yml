@@ -4,6 +4,7 @@
 #   docker compose run --rm enrichment enrich 7707049388 --full
 #   docker compose run --rm enrichment batch --limit 500
 #   docker compose run --rm enrichment stats
+#   docker compose run --rm --entrypoint scripts/enrich_all.sh enrichment   # полный прогон, см. docs/enrichment
 services:
   db:
     image: pgvector/pgvector:pg16  # pgvector пригодится индексу эмбеддингов (ТЗ, раздел 7)
@@ -28,7 +29,8 @@ services:
     environment:
       ENRICHMENT_DB: postgresql+psycopg://${POSTGRES_USER:-squad}:${POSTGRES_PASSWORD:-squad}@db:5432/${POSTGRES_DB:-squad}
     volumes:
-      - ./dataset:/app/dataset:ro  # выгрузка поставщиков для пакетного прогона
+      - ./dataset:/app/dataset:ro  # выгрузка поставщиков и реестры, скачанные вручную
+      - ./data:/app/data           # выгрузки ФНС (~2,5 ГБ), переживают пересоздание контейнера
     depends_on:
       db:
         condition: service_healthy

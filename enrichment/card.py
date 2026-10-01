@@ -9,7 +9,7 @@ from .models import Fact, now_utc
 
 # Чем левее источник, тем выше доверие к его значению поля.
 SOURCE_PRIORITY = ["rmsp", "fns_rsmp", "bo", "pb", "fns_sshr2019", "fns_paytax",
-                   "fns_debtam", "fns_taxoffence", "egrul", "rnp"]
+                   "fns_debtam", "fns_taxoffence", "reg_gisp", "reg_software", "egrul", "rnp"]
 
 # Стартовые пороги, уточняем по распределениям на данных.
 YOUNG_YEARS = 1.0

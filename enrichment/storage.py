@@ -9,7 +9,7 @@ companies       — плоская витрина для ранкера и UI, �
 from typing import Any, Iterable
 
 from sqlalchemy import (
-    JSON, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text,
+    JSON, Boolean, Column, DateTime, Float, Index, Integer, MetaData, String, Table, Text,
     create_engine, inspect, select, text,
 )
 from sqlalchemy.engine import Engine
@@ -87,12 +87,60 @@ companies = Table(
     Column("is_mass_address", Boolean),
     Column("director_companies_max", Integer),
     Column("in_rnp", Boolean),
+    Column("in_gisp", Boolean),
+    Column("in_software_registry", Boolean),
     Column("rnp_ever", Boolean),
     Column("risk_flags", JSON),  # [{"code", "text"}] — основания статуса «Требует проверки»
     Column("needs_review", Boolean),
     Column("enrichment_status", String(16)),  # full | partial | failed
     Column("sources_ok", JSON),
     Column("updated_at", DateTime(timezone=True)),
+)
+
+# Пул компаний из реестра МСП для поиска новых поставщиков (ФТ-06). Снимок пересоздаётся целиком.
+pool_companies = Table(
+    "pool_companies", metadata,
+    Column("inn", String(12), primary_key=True),
+    Column("kind", String(2)),
+    Column("ogrn", String(15)),
+    Column("name_full", Text),
+    Column("name_short", Text),
+    Column("region_code", String(2), index=True),
+    Column("locality", Text),
+    Column("smp_category", Integer),
+    Column("smp_since", String(10)),
+    Column("employees", Float),
+    Column("okved_main", String(16), index=True),
+    Column("okved_main_name", Text),
+    Column("okved_extra", JSON),
+    Column("products", JSON),  # ОКПД2 производимой продукции из реестра МСП
+    Column("licenses_count", Integer),
+    Column("as_of", String(10)),
+    Column("source", String(32), nullable=False),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+)
+
+# ОКВЭД и ОКПД2 продукции пула построчно, для поиска по префиксу кода с индексом
+pool_codes = Table(
+    "pool_codes", metadata,
+    Column("inn", String(12), primary_key=True),
+    Column("code", String(32), primary_key=True),
+    Column("kind", String(8), primary_key=True),  # okved_main | okved | product
+    Index("ix_pool_codes_code", "code"),
+)
+
+# Позиции реестров производителей и правообладателей по ОКПД2 (РРПП, реестр ПО)
+registry_items = Table(
+    "registry_items", metadata,
+    Column("inn", String(12), primary_key=True),
+    Column("registry", String(16), primary_key=True),
+    Column("okpd2", String(32), primary_key=True),
+    Column("items_count", Integer),
+    Column("sample", Text),
+    Column("org_name", Text),
+    Column("source", String(32), nullable=False),
+    Column("fetched_at", DateTime(timezone=True), nullable=False),
+    Index("ix_registry_items_okpd2", "okpd2"),
 )
 
 
@@ -202,3 +250,26 @@ def get_company(engine: Engine, inn: str) -> dict | None:
     with engine.connect() as conn:
         r = conn.execute(select(companies).where(companies.c.inn == inn)).mappings().first()
         return dict(r) if r else None
+
+
+def clear_pool(engine: Engine) -> None:
+    """Снимок РМСП заменяется целиком."""
+    with engine.begin() as conn:
+        conn.execute(pool_codes.delete())
+        conn.execute(pool_companies.delete())
+
+
+def insert_pool_chunk(engine: Engine, comps: list[dict], codes: list[dict]) -> None:
+    with engine.begin() as conn:
+        if comps:
+            conn.execute(pool_companies.insert(), comps)
+        if codes:
+            conn.execute(pool_codes.insert(), codes)
+
+
+def replace_registry(engine: Engine, registry: str, items: list[dict], chunk: int = 10000) -> None:
+    with engine.begin() as conn:
+        conn.execute(registry_items.delete().where(registry_items.c.registry == registry))
+    for i in range(0, len(items), chunk):
+        with engine.begin() as conn:
+            conn.execute(registry_items.insert(), items[i : i + chunk])

@@ -11,9 +11,9 @@ WORKDIR /app
 COPY enrichment/requirements.txt enrichment/requirements.txt
 RUN pip install -r enrichment/requirements.txt
 COPY enrichment/ enrichment/
+COPY scripts/enrich_all.sh scripts/enrich_all.sh
 
-RUN useradd --create-home --uid 1000 app
-USER app
+# root, а не отдельный пользователь: data/ монтируется с хоста, и uid владельца там заранее неизвестен
 
 ENTRYPOINT ["python", "-m", "enrichment"]
 CMD ["stats"]
