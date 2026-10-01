@@ -24,6 +24,9 @@ LINES = {
 }
 
 
+STATUS_NAMES = {"ACTIVE": "Действующая организация"}  # остальные коды пишем как есть
+
+
 async def find_org(http: Http, inn: str) -> dict | None:
     """Строка поиска ГИР БО: id карточки, ОКВЭД, краткое имя (ОКВЭД — бесплатно, без доп. запроса)."""
     r = await http.request(
@@ -51,10 +54,18 @@ async def fetch(http: Http, inn: str, bo_id: str | None = None) -> SourceResult:
         org = await find_org(http, inn)
         ts = now_utc()
         if org:
+            res.raws.append(RawResponse(inn, SOURCE, "search", 200, org, ts))
             bo_id = str(org["id"])
             okved = org.get("okved2")
             res.add("okved_main", okved.get("id") if isinstance(okved, dict) else okved, ts)
             res.add("name_short", org.get("shortName"), ts)
+            # статус юрлица — бесплатно, без ЕГРЮЛ с капчей
+            code = org.get("statusCode")
+            if code:
+                res.add("bo_status_code", code, ts)
+                res.add("bo_status_date", org.get("statusDate"), ts)
+                res.add("status", STATUS_NAMES.get(code, code), ts)
+                res.add("is_liquidated", code != "ACTIVE", ts)
     ts = now_utc()
     res.add("bo_id", bo_id, ts)
     if not bo_id:

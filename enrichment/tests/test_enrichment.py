@@ -124,10 +124,12 @@ def test_bo_finance_in_rubles():
 
 def test_bo_search_gives_okved():
     http = FakeHttp({"advanced-search": {"content": [{"id": 6530703, "inn": "<strong>7605016030</strong>",
-                                                      "shortName": "ООО ТЕНЗОР", "okved2": "62.01"}]},
+                                                      "shortName": "ООО ТЕНЗОР", "okved2": "62.01",
+                                                      "statusCode": "ACTIVE", "statusDate": "2002-10-04"}]},
                      "/bfo/": []})
     f = facts(run(bo.fetch(http, "7605016030")))
     assert f["okved_main"] == "62.01" and f["bo_id"] == "6530703" and f["bfo_found"] is False
+    assert f["status"] == "Действующая организация" and f["is_liquidated"] is False
 
 
 def test_bo_hidden_reporting():
