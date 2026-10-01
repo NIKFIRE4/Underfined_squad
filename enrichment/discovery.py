@@ -62,13 +62,23 @@ class Candidate:
     name: str | None = None
     region_code: str | None = None
     is_smp: bool | None = None
-    evidence: list[dict] = field(default_factory=list)  # {text, source, channel}
+    evidence: list[dict] = field(default_factory=list)  # {text, source, channel, score, fetched_at}
     channels: set[str] = field(default_factory=set)
+    okved_main: str | None = None
+    products: list[dict] = field(default_factory=list)
+    registry_codes: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
 
-    def hit(self, channel: str, score: float, text: str, source: str) -> None:
+    def as_company(self) -> dict:
+        """Вход для classify_role."""
+        return {"okved_main": self.okved_main, "products": self.products,
+                "gisp_okpd2": [{"okpd2": c} for c in self.registry_codes.get("gisp", [])],
+                "software_okpd2": [{"okpd2": c} for c in self.registry_codes.get("software", [])]}
+
+    def hit(self, channel: str, score: float, text: str, source: str, fetched_at=None) -> None:
         self.channels.add(channel)
         self.score = max(self.score, score)
-        self.evidence.append({"text": text, "source": source, "channel": channel, "score": score})
+        self.evidence.append({"text": text, "source": source, "channel": channel, "score": score,
+                              "fetched_at": fetched_at})
 
 
 def find_new_companies(engine: Engine, okpd2: list[str], *, regions: set[str] | None = None,
@@ -97,10 +107,11 @@ def find_new_companies(engine: Engine, okpd2: list[str], *, regions: set[str] | 
                 continue
             c = cand(r["inn"])
             c.name = c.name or r["org_name"]
+            c.registry_codes[r["registry"]].append(r["okpd2"])
             c.hit("registry", DEPTH_SCORE[d] + CHANNEL_PENALTY["registry"],
                   f"В {REGISTRY_NAMES.get(r['registry'], r['registry'])}: {r['items_count']} поз. "
                   f"ОКПД2 {r['okpd2']}" + (f" («{r['sample'][:80]}»)" if r["sample"] else ""),
-                  r["source"])
+                  r["source"], r["fetched_at"])
         # 2–3. реестр МСП: продукция и ОКВЭД
         for r in conn.execute(select(pc).where(or_(
             (pc.c.kind == "product") & prefix_filter(pc.c.code, levels),
@@ -132,6 +143,9 @@ def find_new_companies(engine: Engine, okpd2: list[str], *, regions: set[str] | 
         if p is not None:
             c.name = p["name_short"] or p["name_full"] or c.name
             c.region_code, c.is_smp = p["region_code"], True
+            c.okved_main, c.products = p["okved_main"], p["products"] or []
+            for e in c.evidence:
+                e["fetched_at"] = e["fetched_at"] or p["fetched_at"]
         else:
             c.region_code = inn[:2]
         if only_smp and not c.is_smp:

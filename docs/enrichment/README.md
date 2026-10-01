@@ -31,7 +31,7 @@ docker compose up -d db
 docker compose run --rm --entrypoint scripts/enrich_all.sh enrichment
 docker compose run --rm -e ENRICH_LIMIT=300 --entrypoint scripts/enrich_all.sh enrichment   # быстрый прогон
 
-# проверка без сети (18 тестов, < 1 с)
+# проверка без сети (19 тестов, < 1 с)
 docker compose run --rm --entrypoint python enrichment -m pytest enrichment/tests -q
 
 # отдельные шаги
@@ -127,6 +127,26 @@ enrichment/
 - **дистрибьютор** — ОКВЭД 46;
 - **поставщик-исполнитель** — ОКВЭД 47, 33 и сервисные разделы.
 
+## Подключение к web-service
+
+Адаптер под контракт `web-service/INTEGRATION.md` (ветка `web-service-mvp`) — [enrichment/webservice.py](../../enrichment/webservice.py). Файл `web-service/integrations/enricher.py` целиком:
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # корень репозитория с пакетом enrichment
+from enrichment.webservice import READY, enrich  # noqa: E402,F401
+```
+
+Что делает `enrich(lot, candidates)`:
+1. Берёт карточки кандидатов из БД (`ENRICHMENT_DB`). Если `ENRICH_LIVE=1`, ИНН, которых нет в БД, дозапрашивает с общим таймаутом `ENRICH_LIVE_TIMEOUT` (15 с).
+2. Исключает ликвидированных, кандидатов из РНП и, при `is_smp=true`, не-МСП. Если данных нет, ставит «Требует проверки» и «Не обогащено».
+3. Заполняет имя, КПП, регион, МСП, роль; статус «Требует проверки» с флагами риска; 2–4 причины; `sources` с URL источника и датой получения.
+4. Добавляет до `ENRICH_NEW_MAX` (10) новых компаний по ОКПД2 лота: статус «Новый в пуле», скор контентного канала, приведённый к шкале ≤ 75, чтобы новые не вытесняли сильных кандидатов с историей.
+
+Зависимости web-service ставятся из `enrichment/requirements.txt`. Модели нейросетей не используются.
+
 ## Флаги «Требует проверки» (`companies.risk_flags`)
 
 Каждый флаг — это `{code, text}`, а `text` можно сразу показывать как причину. Пороги заданы константами в [card.py](../../enrichment/card.py).
@@ -165,7 +185,7 @@ enrichment/
 - [x] Устойчивость: загрузка частями с CRC, битый XML не роняет разбор, скрипт полного прогона, офлайн-тесты
 - [ ] Пакетный прогон ГИР БО и РНП по 44 тыс. ИНН (на машине прогона)
 - [ ] Статус «действующая» для не-МСП: ЕГРЮЛ и ПБ с капчей, только медленно
-- [ ] Адаптер для `web-service/integrations/enricher.py` (контракт — `web-service/INTEGRATION.md` в ветке `web-service-mvp`)
+- [x] Адаптер для `web-service/integrations/enricher.py` (19 офлайн-тестов, включая сквозной тест адаптера)
 - [ ] Реестр медизделий и ГРЛС
 
 ## Открытые вопросы

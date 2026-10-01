@@ -263,3 +263,82 @@ def test_classify_role():
     sw = discovery.classify_role({"okved_main": "62.01", "software_okpd2": [{"okpd2": "58.29.21"}]}, ["58.29.21"])
     assert sw["label"] == "Правообладатель" and sw["confidence"] == "medium"
     assert discovery.classify_role({})["value"] == "unknown"
+
+
+# --- адаптер web-service (контракт web-service/INTEGRATION.md) ---
+
+from dataclasses import dataclass as _dc, field as _field  # noqa: E402
+
+
+@_dc
+class WsLot:
+    lot_id: str
+    notice: dict
+    items: list
+
+
+@_dc
+class WsCandidate:
+    supplier_name: str
+    supplier_inn: str = ""
+    supplier_kpp: str = ""
+    score: float = 0
+    role: str = "Не определена"
+    status: str = "Требует проверки"
+    region: str = ""
+    is_smp: bool | None = None
+    is_new: bool = False
+    reasons: list = _field(default_factory=list)
+    sources: list = _field(default_factory=list)
+    enrichment_status: str = "Не обогащено"
+
+
+def test_webservice_adapter(tmp_path, monkeypatch):
+    from enrichment import webservice
+    monkeypatch.setenv("ENRICHMENT_DB", f"sqlite:///{tmp_path}/ws.db")
+    webservice._engine.cache_clear()
+    webservice._known_inns.cache_clear()
+    engine = webservice._engine()
+    ts = now_utc()
+
+    def res(inn, source, **fields):
+        r = SourceResult(source, inn)
+        for k, v in fields.items():
+            r.add(k, v, ts)
+        return r
+
+    good, rnp_inn, big = "7804428656", "7814778459", "7707049388"
+    storage.save_results(engine, [
+        res(good, "pb", status="Действующая организация", okved_main="32.50", reg_date="2009-12-22"),
+        res(good, "rmsp", is_smp=True, smp_category=1),
+        res(good, "bo", revenue=17_366_000.0, finance_year=2025),
+        res(good, "fns_sshr2019", employees=8.0),
+        res(rnp_inn, "pb", status="Действующая организация"), res(rnp_inn, "rnp", in_rnp=True),
+        res(big, "pb", status="Действующая организация"), res(big, "rmsp", is_smp=False),
+        res(big, "fns_sshr2019"),
+    ])
+    storage.replace_registry(engine, "gisp", [
+        {"inn": "7801000001", "registry": "gisp", "okpd2": "32.50.13.190", "items_count": 3,
+         "sample": "Зажим", "org_name": "ООО ЗАВОД", "source": "reg_gisp", "fetched_at": ts}])
+
+    lot = WsLot("1", {"is_smp": "true"}, [{"lot_id": "1", "product_name": "Зажим", "okpd2_code": "32.50.13.190"}])
+    cands = [WsCandidate("", good, score=80), WsCandidate("X", rnp_inn, score=70),
+             WsCandidate("Y", big, score=60), WsCandidate("Z", "7802000002", score=50)]
+    out = {c.supplier_inn: c for c in webservice.enrich(lot, cands)}
+
+    assert rnp_inn not in out          # в РНП — исключён
+    assert big not in out              # закупка только для МСП, а он не МСП
+    g = out[good]
+    assert g.supplier_name == good or g.supplier_name  # имя подставлено
+    assert g.is_smp is True and g.region == "78" and g.enrichment_status.startswith("Обогащено")
+    assert g.role == "Производитель"   # ОКВЭД 32.50 того же класса, что и лот
+    assert any("Выручка 17.4 млн ₽" in r for r in g.reasons)
+    assert all(s["url"].startswith("https://") and "+" in s["checked_at"] for s in g.sources)
+    assert out["7802000002"].enrichment_status == "Не обогащено"   # нет в БД: оставлен, но под проверку
+    assert "7801000001" not in out    # МСП-закупка: статус МСП новой компании не подтверждён — не добавляем
+
+    lot.notice["is_smp"] = "false"
+    out = {c.supplier_inn: c for c in webservice.enrich(lot, [WsCandidate("", good, score=80)])}
+    new = out["7801000001"]
+    assert new.is_new and new.status == "Новый в пуле" and new.role == "Производитель"
+    assert 0 < new.score <= webservice.NEW_SCORE_CAP
