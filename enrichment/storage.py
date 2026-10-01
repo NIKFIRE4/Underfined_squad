@@ -50,12 +50,12 @@ enrichment_runs = Table(
 companies = Table(
     "companies", metadata,
     Column("inn", String(12), primary_key=True),
-    Column("kind", String(2)),  # ul | ip
-    Column("ogrn", String(15)),
-    Column("kpp", String(9)),
+    Column("kind", Text),  # ul | ip
+    Column("ogrn", Text),
+    Column("kpp", Text),
     Column("name_full", Text),
     Column("name_short", Text),
-    Column("region_code", String(2)),
+    Column("region_code", Text),
     Column("address", Text),
     Column("status", Text),
     Column("is_active", Boolean),
@@ -63,7 +63,7 @@ companies = Table(
     Column("liquidation_date", String(10)),
     Column("age_years", Float),
     Column("director", JSON),
-    Column("okved_main", String(16)),
+    Column("okved_main", Text),
     Column("okved_main_name", Text),
     Column("okved_extra", JSON),
     Column("charter_capital", Float),
@@ -101,16 +101,16 @@ companies = Table(
 pool_companies = Table(
     "pool_companies", metadata,
     Column("inn", String(12), primary_key=True),
-    Column("kind", String(2)),
-    Column("ogrn", String(15)),
+    Column("kind", Text),
+    Column("ogrn", Text),
     Column("name_full", Text),
     Column("name_short", Text),
-    Column("region_code", String(2), index=True),
+    Column("region_code", Text, index=True),
     Column("locality", Text),
     Column("smp_category", Integer),
     Column("smp_since", String(10)),
     Column("employees", Float),
-    Column("okved_main", String(16), index=True),
+    Column("okved_main", Text, index=True),
     Column("okved_main_name", Text),
     Column("okved_extra", JSON),
     Column("products", JSON),  # ОКПД2 производимой продукции из реестра МСП
@@ -124,8 +124,8 @@ pool_companies = Table(
 pool_codes = Table(
     "pool_codes", metadata,
     Column("inn", String(12), primary_key=True),
-    Column("code", String(32), primary_key=True),
-    Column("kind", String(8), primary_key=True),  # okved_main | okved | product
+    Column("code", Text, primary_key=True),
+    Column("kind", Text, primary_key=True),  # okved_main | okved | product
     Index("ix_pool_codes_code", "code"),
 )
 
@@ -134,7 +134,7 @@ registry_items = Table(
     "registry_items", metadata,
     Column("inn", String(12), primary_key=True),
     Column("registry", String(16), primary_key=True),
-    Column("okpd2", String(32), primary_key=True),
+    Column("okpd2", Text, primary_key=True),
     Column("items_count", Integer),
     Column("sample", Text),
     Column("org_name", Text),
@@ -152,15 +152,20 @@ def connect(url: str) -> Engine:
 
 
 def _add_missing_columns(engine: Engine) -> None:
-    """Мини-миграция для хакатона: новые колонки витрины добавляются к существующей таблице."""
+    """Мини-миграция для хакатона: новые колонки добавляются, а VARCHAR(n), ставший в модели TEXT,
+    расширяется (только PostgreSQL: SQLite длину не проверяет)."""
     insp = inspect(engine)
+    pg = engine.dialect.name == "postgresql"
     for table in metadata.sorted_tables:
-        have = {c["name"] for c in insp.get_columns(table.name)}
+        have = {c["name"]: c for c in insp.get_columns(table.name)}
         for col in table.columns:
+            ddl = col.type.compile(dialect=engine.dialect)
             if col.name not in have:
-                ddl = col.type.compile(dialect=engine.dialect)
                 with engine.begin() as conn:
                     conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl}'))
+            elif pg and isinstance(col.type, Text) and getattr(have[col.name]["type"], "length", None):
+                with engine.begin() as conn:
+                    conn.execute(text(f'ALTER TABLE {table.name} ALTER COLUMN "{col.name}" TYPE TEXT'))
 
 
 def _upsert(engine: Engine, table: Table, rows: list[dict], keys: list[str]) -> None:

@@ -125,6 +125,9 @@ def build_company(inn: str, facts: list[Fact], runs: dict[str, str]) -> tuple[di
         c["is_active"] = status in ACTIVE_STATUSES and not closed
     elif c.get("is_liquidated") is not None or c.get("found_egrul"):
         c["is_active"] = not closed
+    elif c.get("is_smp") and c.get("smp_as_of"):
+        # реестр МСП включает только действующие компании: есть в свежем снимке — значит, действует
+        c["is_active"] = not closed
     else:
         c["is_active"] = None
     c["age_years"] = _years_since(c.get("reg_date"))

@@ -31,8 +31,12 @@ docker compose up -d db
 docker compose run --rm --entrypoint scripts/enrich_all.sh enrichment
 docker compose run --rm -e ENRICH_LIMIT=300 --entrypoint scripts/enrich_all.sh enrichment   # быстрый прогон
 
-# проверка без сети (19 тестов, < 1 с)
+# проверка без сети (19 тестов, < 1 с); вторая строка — те же тесты на PostgreSQL стенда:
+# SQLite не проверяет длину строк и типы, поэтому перед прогоном на стенде гоняйте обе
 docker compose run --rm --entrypoint python enrichment -m pytest enrichment/tests -q
+docker compose exec db createdb -U squad squad_test   # один раз
+docker compose run --rm -e ENRICHMENT_TEST_DB=postgresql+psycopg://squad:squad@db:5432/squad_test \
+  --entrypoint python enrichment -m pytest enrichment/tests -q
 
 # отдельные шаги
 docker compose up -d db                                         # PostgreSQL 16 + pgvector

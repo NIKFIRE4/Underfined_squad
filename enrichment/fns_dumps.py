@@ -19,6 +19,7 @@ import httpx
 from lxml import etree
 
 from .http import USER_AGENT
+from .inn import is_valid_inn
 from .models import SourceResult
 from .sources._util import num, ru_date
 
@@ -282,7 +283,7 @@ def load_rsmp(targets: set[str], on_pool_chunk: Callable[[list[dict], list[dict]
         seen += 1
         rec = _rsmp(doc)
         inn = rec.get("inn")
-        if not inn:
+        if not inn or not is_valid_inn(inn):
             continue
         if inn in targets:
             res = found.setdefault(inn, SourceResult(source, inn))

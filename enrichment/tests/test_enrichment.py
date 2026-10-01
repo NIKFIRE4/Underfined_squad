@@ -190,8 +190,8 @@ def test_card_region_from_kpp():
     assert row["region_code"] == "78"
 
 
-def test_storage_roundtrip(tmp_path):
-    engine = storage.connect(f"sqlite:///{tmp_path}/t.db")
+def test_storage_roundtrip(db_url):
+    engine = storage.connect(db_url)
     res = SourceResult("pb", INN)
     res.add("okved_main", "33.12", now_utc())
     res.add("okved_extra", ["36.00"], now_utc())
@@ -203,7 +203,7 @@ def test_storage_roundtrip(tmp_path):
     assert got["okved_main"] == "33.12" and got["okved_extra"] == ["36.00"]
     assert got["enrichment_status"] == "partial"
     # повторный connect к той же БД не падает (мини-миграция колонок)
-    storage.connect(f"sqlite:///{tmp_path}/t.db")
+    storage.connect(db_url)
 
 
 # --- discovery: новые компании и роль ---
@@ -220,8 +220,8 @@ def test_okpd2_levels_and_depth():
     assert discovery._match_depth("21.20", ["32.50.13.190"]) == 0
 
 
-def test_find_new_companies(tmp_path):
-    engine = storage.connect(f"sqlite:///{tmp_path}/d.db")
+def test_find_new_companies(db_url):
+    engine = storage.connect(db_url)
     ts = now_utc()
     storage.replace_registry(engine, "gisp", [
         {"inn": "7801000001", "registry": "gisp", "okpd2": "32.50.13.190", "items_count": 5,
@@ -293,9 +293,9 @@ class WsCandidate:
     enrichment_status: str = "Не обогащено"
 
 
-def test_webservice_adapter(tmp_path, monkeypatch):
+def test_webservice_adapter(db_url, monkeypatch):
     from enrichment import webservice
-    monkeypatch.setenv("ENRICHMENT_DB", f"sqlite:///{tmp_path}/ws.db")
+    monkeypatch.setenv("ENRICHMENT_DB", db_url)
     webservice._engine.cache_clear()
     webservice._known_inns.cache_clear()
     engine = webservice._engine()
