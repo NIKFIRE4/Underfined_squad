@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+dataset
+data
+**/__pycache__
+*.pdf
+*.ipynb
+*.csv
+*.parquet
+handoff
