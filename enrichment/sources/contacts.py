@@ -71,39 +71,51 @@ def search_name(name: str | None) -> str | None:
     return s if len(s) >= 3 else None
 
 
-async def fetch(http: Http, inn: str, reqnums: list[str] | None = None, name: str | None = None) -> SourceResult:
-    res = SourceResult(SOURCE, inn)
-    candidates: list[tuple[str, str]] = []  # (номер контракта, как найден)
-    for reqnum in (reqnums or [])[:MAX_REQNUMS]:
-        r = await http.request(SOURCE, "GET", f"{BASE}/search/results.html", insecure=True,
-                               params={"searchString": reqnum, "fz44": "on"})
-        candidates += [(n, f"закупка {reqnum}") for n in contract_numbers(r.text)[:1]]
-    if not candidates and (q := search_name(name)):
-        r = await http.request(SOURCE, "GET", f"{BASE}/search/results.html", insecure=True,
-                               params={"supplierTitle": q, "fz44": "on", "recordsPerPage": "_10",
-                                       "sortBy": "UPDATE_DATE"})
-        candidates += [(n, f"поиск по названию «{q}»") for n in contract_numbers(r.text)]
+async def _search(http: Http, params: dict) -> list[str]:
+    r = await http.request(SOURCE, "GET", f"{BASE}/search/results.html", insecure=True,
+                           params={"fz44": "on", **params})
+    return contract_numbers(r.text)
 
-    seen = set()
-    for number, how in candidates[:MAX_CARDS]:
-        if number in seen:
-            continue
-        seen.add(number)
-        r = await http.request(SOURCE, "GET", f"{BASE}/contractCard/participants.html", insecure=True,
-                               limiter_key="contacts_card", params={"reestrNumber": number})
-        mine = [p for p in parse_participants(r.text) if p["inn"] == inn]
-        if not mine:
-            continue
-        p, ts = mine[0], now_utc()
-        res.raws.append(RawResponse(inn, SOURCE, f"participants/{number}", r.status_code, p, ts))
-        url = f"{BASE}/contractCard/common-info.html?reestrNumber={number}"
-        res.add("contacts_found", bool(p["phones"] or p["emails"]), ts)
-        res.add("contact_phones", p["phones"], ts)
-        res.add("contact_emails", p["emails"], ts)
-        res.add("contact_postal_address", p["postal"], ts)
-        res.add("contact_contract_url", url, ts)
-        res.add("contact_found_by", how, ts)
-        return res
+
+async def _supplier_in(http: Http, number: str, inn: str) -> tuple[dict | None, int]:
+    r = await http.request(SOURCE, "GET", f"{BASE}/contractCard/participants.html", insecure=True,
+                           limiter_key="contacts_card", params={"reestrNumber": number})
+    return next((p for p in parse_participants(r.text) if p["inn"] == inn), None), r.status_code
+
+
+async def fetch(http: Http, inn: str, reqnums: list[str] | None = None, name: str | None = None) -> SourceResult:
+    """Поиск → карточка → стоп при первом совпадении ИНН: обычно 2 запроса на ИНН.
+    Поиск — самый «дорогой» эндпоинт (429 при частых запросах), поэтому лишних поисков не делаем."""
+    res = SourceResult(SOURCE, inn)
+    cards_left = MAX_CARDS
+
+    async def try_numbers(numbers: list[str], how: str) -> bool:
+        nonlocal cards_left
+        for number in numbers:
+            if cards_left <= 0:
+                return False
+            cards_left -= 1
+            p, status = await _supplier_in(http, number, inn)
+            if p is None:
+                continue
+            ts = now_utc()
+            res.raws.append(RawResponse(inn, SOURCE, f"participants/{number}", status, p, ts))
+            res.add("contacts_found", bool(p["phones"] or p["emails"]), ts)
+            res.add("contact_phones", p["phones"], ts)
+            res.add("contact_emails", p["emails"], ts)
+            res.add("contact_postal_address", p["postal"], ts)
+            res.add("contact_contract_url", f"{BASE}/contractCard/common-info.html?reestrNumber={number}", ts)
+            res.add("contact_found_by", how, ts)
+            return True
+        return False
+
+    for reqnum in (reqnums or [])[:MAX_REQNUMS]:
+        if await try_numbers((await _search(http, {"searchString": reqnum}))[:1], f"закупка {reqnum}"):
+            return res
+    if (q := search_name(name)) and cards_left > 0:
+        numbers = await _search(http, {"supplierTitle": q, "recordsPerPage": "_10", "sortBy": "UPDATE_DATE"})
+        if await try_numbers(numbers, f"поиск по названию «{q}»"):
+            return res
 
     res.add("contacts_found", False, now_utc())
     return res
