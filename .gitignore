@@ -19,3 +19,7 @@ Thumbs.db
 
 
 dataset/
+
+# Артефакты модели ранжирования хранятся в репозитории (через Git LFS)
+!models/**/*.parquet
+!models/*.parquet
