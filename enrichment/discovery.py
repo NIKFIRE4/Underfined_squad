@@ -159,7 +159,9 @@ def find_new_companies(engine: Engine, okpd2: list[str], *, regions: set[str] | 
         c.score = min(100.0, c.score)
         c.evidence.sort(key=lambda e: -e["score"])
         out.append(c)
-    out.sort(key=lambda c: (-c.score, c.inn))
+    # при равном скоре: больше каналов, затем есть название, затем больше позиций в реестрах
+    out.sort(key=lambda c: (-c.score, -len(c.channels), c.name is None,
+                            -sum(len(v) for v in c.registry_codes.values()), c.inn))
     return out[:limit]
 
 

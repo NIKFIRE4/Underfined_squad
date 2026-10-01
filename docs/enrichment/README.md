@@ -52,6 +52,13 @@ docker compose run --rm enrichment registries-load              # РРПП и р
 docker compose run --rm enrichment discover 32.50.13.190        # новые компании по ОКПД2 лота
 ```
 
+**Перенос готовой базы** между машинами (вместо повторного многочасового прогона):
+
+```bash
+scripts/db_dump.sh                 # → data/enrichment.dump; NO_RAW=1 — без сырых ответов, в разы меньше
+docker compose up -d db && scripts/db_restore.sh data/enrichment.dump   # на целевой машине
+```
+
 Без Docker: `python3 -m venv .venv && .venv/bin/pip install -r enrichment/requirements.txt`, БД по умолчанию — `sqlite:///data/enrichment.db`. Другую БД задаёт `--db` или переменная `ENRICHMENT_DB`.
 
 ## Инварианты (не нарушать)
