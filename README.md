@@ -21,7 +21,7 @@ cd web-service
 python server.py                     # http://127.0.0.1:8000
 ```
 
-В Windows можно открыть `web-service/run.bat`. По умолчанию обработка CSV идёт в деморежиме; реальная модель в обработке CSV — `PIPELINE_MODE=live`. Эндпоинт `/api/recommendations` работает с реальной моделью в любом режиме. Модель грузится в фоне при старте (~6 с), дальше ~1–3 с на закупку.
+В Windows можно открыть `web-service/run.bat`. По умолчанию обработка CSV идёт моделью v3 (`models/`, `PIPELINE_MODE=live`); деморежим без модели — `PIPELINE_MODE=demo`. Эндпоинт `/api/recommendations` работает с реальной моделью в любом режиме. Модель грузится в фоне при старте (~6 с), дальше ~1–3 с на закупку.
 
 - [Инструкция по сервису и ограничения MVP](web-service/README.md)
 - [Контракты подключения модели и обогащения](web-service/INTEGRATION.md)

@@ -24,7 +24,7 @@ from integrations import recommender, enricher, analysis
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("DATA_DIR", str(ROOT / "data"))).resolve()
 MAX_FILE = int(os.environ.get("MAX_FILE_MB", "512")) * 1024 * 1024
-MODE = os.environ.get("PIPELINE_MODE", "demo")
+MODE = os.environ.get("PIPELINE_MODE", "live")  # live — модель v3 (models/); demo — вымышленные компании без модели
 JOBS = {}
 LOCK = threading.RLock()
 POOL = ThreadPoolExecutor(max_workers=1)

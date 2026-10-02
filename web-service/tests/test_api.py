@@ -35,6 +35,8 @@ def make_xlsx(rows):
 class ApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.mode=patch('server.MODE','demo')  # тесты API — на деморежиме; по умолчанию сервер работает моделью
+        cls.mode.start()
         cls.temp=tempfile.TemporaryDirectory()
         cls.original_data=server.DATA
         server.DATA=Path(cls.temp.name)
@@ -48,6 +50,7 @@ class ApiTests(unittest.TestCase):
         cls.http.shutdown();cls.http.server_close();cls.thread.join()
         server.DATA=cls.original_data
         cls.temp.cleanup()
+        cls.mode.stop()
 
     def call(self,path,method='GET',data=None,headers=None):
         req=Request(self.base+path,data=data,method=method,headers=headers or {})
