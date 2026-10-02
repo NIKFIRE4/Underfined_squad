@@ -1,7 +1,6 @@
 """Сборка карточки компании из фактов: выбор значения по приоритету источников,
 расхождения между источниками и флаги «Требует проверки» (ТЗ, раздел 6.5)."""
 
-import re
 from datetime import date
 from typing import Any
 
@@ -94,10 +93,9 @@ def links(inn: str, c: dict) -> list[dict]:
         add("Сайт компании (из реестра ПО)", site, "contact")
     if c.get("contact_contract_url"):
         add("Контракт ЕИС с контактами поставщика", c["contact_contract_url"], "contact")
-    name = c.get("name_short") or c.get("name_full")
-    if name:
-        q = quote(re.sub(r'^(ООО|АО|ПАО|ЗАО|ИП)\s+|"', " ", name).strip())
-        add("Контракты поставщика в ЕИС", f"https://zakupki.gov.ru/epz/contract/search/results.html?supplierTitle={q}&fz44=on", "profile")
+    # по ИНН, а не по названию: у ИП название — ФИО, поиск находит однофамильцев
+    add("Контракты 44-ФЗ компании в ЕИС (все годы и регионы)",
+        f"https://zakupki.gov.ru/epz/contract/search/results.html?fz44=on&searchString={quote(inn)}", "profile")
     if c.get("bo_id"):
         add("Бухотчётность (ГИР БО)", f"https://bo.nalog.gov.ru/organizations-card/{c['bo_id']}", "profile")
     add("Реестр МСП", f"https://rmsp.nalog.ru/search.html?query={inn}", "profile")

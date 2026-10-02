@@ -506,13 +506,15 @@ function srcBtn(src) {
   } catch { return null; }
 }
 // field → {name, url, date}: код источника поля из card.fields, адрес для ручной проверки — из sources_status
+// Контракты компании в ЕИС по ИНН (не по названию: у ИП это ФИО, находит однофамильцев)
+const eisContracts = inn => 'https://zakupki.gov.ru/epz/contract/search/results.html?fz44=on&searchString=' + encodeURIComponent(inn);
 function sourceResolver(card) {
   const byCode = Object.fromEntries((card.sources_status || []).map(s => [s.source, s]));
-  const eis = (card.links || []).find(l => /Контракты поставщика/.test(l.title))?.url;
   return field => {
     const f = card.fields?.[field];
     if (!f?.source) return null;
-    if (f.source === 'history') return {name: HISTORY_SOURCE + ' — проверить в ЕИС', url: eis || byCode.history?.url, date: f.fetched_at};
+    // Числа — участия в лотах СПб 2024–2025, включая Электронный магазин; в ЕИС — контракты 44-ФЗ за все годы и регионы
+    if (f.source === 'history') return {name: HISTORY_SOURCE + '. Ссылка — контракты 44-ФЗ компании в ЕИС за все годы и регионы, без малых закупок Электронного магазина: числа не совпадут', url: eisContracts(card.inn), date: f.fetched_at};
     const s = byCode[f.source];
     return s ? {name: s.name, url: s.url, date: f.fetched_at} : null;
   };
@@ -673,7 +675,7 @@ async function loadOkpdCoverage(c, lot, box) {
 // Сноска: откуда в выдаче сам поставщик (а не сведения о нём)
 function originNote(c) {
   if (c.is_demo) return h('aside', {class: 'origin-note'}, h('strong', {text: 'Откуда в списке: '}), 'демо-компания, вымышлена для проверки интерфейса.');
-  const eis = c.supplier_inn ? {name: 'ЕИС: контракты поставщика', url: 'https://zakupki.gov.ru/epz/contract/search/results.html?searchString=' + encodeURIComponent(c.supplier_inn)} : null;
+  const eis = c.supplier_inn ? {name: 'ЕИС: контракты 44-ФЗ компании (все годы и регионы)', url: eisContracts(c.supplier_inn)} : null;
   if (!c.is_new) {
     return h('aside', {class: 'origin-note'}, h('strong', {text: 'Откуда в списке: '}),
       'история закупок Санкт-Петербурга — ', h('span', {class: 'origin-src'}, HISTORY_SOURCE, srcBtn(eis)),
