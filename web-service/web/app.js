@@ -98,6 +98,32 @@ async function api(url, options = {}) {
   return payload;
 }
 function remember(id) { try { id ? localStorage.setItem(STORAGE_KEY, id) : localStorage.removeItem(STORAGE_KEY); } catch { /* приватный режим */ } }
+
+/* ---------- История подборов в этом браузере (без авторизации) ---------- */
+// Сервер хранит задачи в data/<id>; браузер помнит, какие из них запускал он: localStorage, до HISTORY_MAX записей.
+const HISTORY_KEY = 'pool-local-history-v1';
+const HISTORY_MAX = 30;
+function historyLoad() {
+  try { const list = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); return Array.isArray(list) ? list : []; } catch { return []; }
+}
+function historySave(list) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX))); } catch { /* приватный режим — истории не будет */ }
+  renderHistoryButton();
+}
+function historyUpsert(id, patch) {
+  if (!id) return;
+  const list = historyLoad();
+  const i = list.findIndex(e => e.id === id);
+  const entry = {...(i >= 0 ? list[i] : {id, at: Date.now()}), ...patch};
+  if (i >= 0) list.splice(i, 1);
+  historySave([entry, ...list]);
+}
+function historyFromJob(job) {
+  const stats = job.stats || {};
+  const files = job.detected ? [job.detected.notices, job.detected.items].filter(Boolean) : Object.values(job.files || {}).map(f => f.name).filter(Boolean);
+  historyUpsert(job.id, {status: job.status, files, lots: stats.lots, verified: stats.verified, unverified: stats.unverified,
+                         at: Math.round((job.created_at || Date.now() / 1000) * 1000), message: job.status === 'failed' ? job.message : undefined});
+}
 const maxBytes = () => state.health?.max_file_bytes || 512 * 1024 * 1024;
 
 function show(view) {
@@ -223,6 +249,7 @@ async function startJob() {
     }
     await api(`/api/jobs/${job.id}/start`, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body} : {method: 'POST'});
     remember(job.id);
+    historyUpsert(job.id, {status: 'queued', files: state.selection.map(e => e.file.name)});
     setProgress(20, 'Ставим в очередь…', 'check', fmtSize(total));
     await poll();
   } catch (error) {
@@ -458,7 +485,7 @@ async function poll() {
     for (;;) {
       const job = await api('/api/jobs/' + state.jobId);
       if (job.status === 'completed') { state.busy = false; await showResults(job); return; }
-      if (job.status === 'failed') { failUpload(job.message || 'Обработка остановлена.'); return; }
+      if (job.status === 'failed') { historyFromJob(job); failUpload(job.message || 'Обработка остановлена.'); return; }
       if (job.status === 'uploading') { failUpload(state.selection.length ? 'Загрузка была прервана. Запустите её ещё раз.' : ''); return; }
       renderJobProgress(job);
       await new Promise(resolve => setTimeout(resolve, 700));
@@ -476,6 +503,7 @@ const GROUP_CAPTION = {
 };
 
 async function showResults(job) {
+  historyFromJob(job);
   state.job = job;
   state.jobId = job.id;
   state.legacy = false;
@@ -1229,10 +1257,69 @@ async function checkHealth() {
   }
 }
 
+function renderHistoryButton() {
+  const n = historyLoad().length;
+  const btn = $('history-btn');
+  if (!btn) return;
+  btn.hidden = !n;
+  $('history-count').textContent = String(n);
+}
+
+const HISTORY_STATUS = {completed: ['ok', 'готово'], failed: ['check', 'ошибка'], queued: ['new', 'в работе'], processing: ['new', 'в работе'], gone: ['check', 'удалено на сервере']};
+function openHistory() {
+  const dialog = h('dialog', {class: 'check-dialog history-dialog', 'aria-labelledby': 'history-title'});
+  const close = () => { dialog.close(); dialog.remove(); };
+  dialog.addEventListener('cancel', e => { e.preventDefault(); close(); });
+  const list = h('ul', {class: 'history-list'});
+  function render() {
+    const items = historyLoad();
+    list.replaceChildren(...(items.length ? items.map(e => {
+      const [tone, label] = HISTORY_STATUS[e.status] || ['check', e.status || '—'];
+      const when = new Date(e.at).toLocaleString('ru-RU', {day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit'});
+      const counts = e.lots != null ? `${fmt(e.lots)} ${plural(e.lots, 'лот', 'лота', 'лотов')} · проверенных ${fmt(e.verified)} · непроверенных ${fmt(e.unverified)}` : '';
+      return h('li', {class: 'history-item'},
+        h('button', {class: 'history-open', type: 'button', disabled: e.status === 'gone' ? true : null, onclick: () => { close(); openFromHistory(e.id); }},
+          h('span', {class: 'history-top'}, h('strong', {text: when}), h('span', {class: 'chip', 'data-tone': tone, text: label})),
+          h('span', {class: 'history-files', text: (e.files || []).join(', ') || 'Файлы без имени'}),
+          counts ? h('small', {text: counts}) : null,
+          e.message ? h('small', {class: 'history-error', text: e.message.slice(0, 160)}) : null),
+        h('button', {class: 'icon-btn history-del', type: 'button', 'aria-label': 'Убрать из истории', title: 'Убрать из истории',
+          onclick: () => { historySave(historyLoad().filter(x => x.id !== e.id)); render(); }}, icon('x')));
+    }) : [h('li', {class: 'muted', text: 'История пуста.'})]));
+  }
+  render();
+  dialog.append(
+    h('header', {class: 'check-head'}, h('h2', {id: 'history-title', text: 'История подборов'}),
+      h('p', {text: 'Подборы, запущенные в этом браузере. Хранится только здесь — на другом компьютере или в другом браузере своя история.'})),
+    h('div', {class: 'check-body'}, list),
+    h('footer', {class: 'check-foot'},
+      h('button', {class: 'btn btn-soft', type: 'button', text: 'Очистить историю', onclick: () => { historySave([]); render(); }}),
+      h('button', {class: 'btn btn-primary', type: 'button', text: 'Закрыть', onclick: close})));
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+async function openFromHistory(id) {
+  if (state.busy) return;
+  try {
+    const job = await api('/api/jobs/' + id);
+    state.jobId = id;
+    remember(id);
+    if (job.status === 'completed') await showResults(job);
+    else if (job.status === 'queued' || job.status === 'processing') { show('progress'); renderJobProgress(job); await poll(); }
+    else { historyFromJob(job); failUpload(job.message || 'Этот подбор не завершён — запустите его заново.'); }
+  } catch (error) {
+    if (error.status === 404) historyUpsert(id, {status: 'gone'});
+    failUpload(error.status === 404 ? 'Результат этого подбора удалён на сервере — запустите подбор заново.' : 'Не удалось открыть подбор: ' + error.message);
+  }
+}
+
 async function init() {
   for (const box of document.querySelectorAll('[data-orbit]')) box.append($('orbit').cloneNode(true));
   for (const svg of document.querySelectorAll('[data-orbit] .orbit')) svg.removeAttribute('id');
   renderTray();
+  renderHistoryButton();
+  $('history-btn').addEventListener('click', openHistory);
   await checkHealth();
   let saved = null;
   try { saved = localStorage.getItem(STORAGE_KEY); } catch { /* приватный режим */ }
