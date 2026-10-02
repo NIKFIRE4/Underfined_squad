@@ -470,7 +470,7 @@ function selectGroup(group, render = true) {
 
 /* ---------- Карточка поставщика ---------- */
 const TAX_REGIMES = {usn: 'УСН', osn: 'ОСН', envd: 'ЕНВД', eshn: 'ЕСХН', psn: 'Патент', npd: 'НПД', srp: 'СРП', ausn: 'АУСН'};
-const SOURCE_STATE = {ok: ['ok', 'получено'], error: ['check', 'ошибка'], captcha: ['check', 'капча'], timeout: ['check', 'таймаут']};
+const SOURCE_STATE = {ok: ['ok', 'получено'], error: ['check', 'ошибка'], captcha: ['check', 'ФНС просит капчу'], timeout: ['check', 'таймаут']};
 const fmtYears = y => {
   const n = Math.floor(Number(y));
   return Number.isFinite(n) ? (n < 1 ? 'меньше года' : `${n} ${plural(n, 'год', 'года', 'лет')}`) : '';
@@ -892,7 +892,8 @@ function renderCompany(c, card, box) {
     const dates = {};
     for (const f of Object.values(card.fields || {})) if (f?.source && f.fetched_at && (!dates[f.source] || f.fetched_at > dates[f.source])) dates[f.source] = f.fetched_at;
     $('sources-section').replaceChildren(h('h3', {text: 'Источники'}), h('ul', {class: 'sources'}, (c.sources || []).filter(s => s.field === 'score').map(sourceItem), checked.map(s => {
-      const [tone, label] = SOURCE_STATE[s.status] || ['check', s.status];
+      // источник в фоновой очереди — не ошибка, а «догружается»: ФНС пускает после паузы
+      const [tone, label] = card.pending?.includes(s.source) && s.status !== 'ok' ? ['new', 'догружается в фоне'] : SOURCE_STATE[s.status] || ['check', s.status];
       return h('li', {class: 'source-row'}, h('span', {}, extLink(s.url, s.name), dates[s.source] ? h('small', {text: 'данные от ' + fmtDate(dates[s.source])}) : null),
         h('span', {class: 'chip', 'data-tone': tone, text: label}));
     })));
