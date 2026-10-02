@@ -276,7 +276,10 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .group-controls { min-width: 0; }
 .group-controls .segmented { width: 100%; }
 .group-controls .segmented button { flex: 1; justify-content: center; padding-inline: 8px; font-size: 13px; }
-.toolbar .search { width: 100%; margin-left: 0; }
+.lot-results { min-width: 0; }
+.lot-results .search { width: 100%; margin-left: 0; }
+.lot-results .lot-detail { margin-top: 24px; }
+.lots .group-controls { margin-bottom: 24px; }
 .segmented { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); }
 .segmented button {
   display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px; border-radius: 999px; border: 0;
@@ -293,7 +296,7 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--ink); }
 .search input::placeholder { color: var(--ink-3); }
 
-.workspace { margin-top: 32px; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 56px; align-items: start; }
+.workspace { margin-top: 4px; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 56px; align-items: start; }
 .lots { position: sticky; top: 16px; }
 .lots-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); font-size: 13.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .lots-list { margin-top: 8px; display: grid; gap: 2px; max-height: calc(100vh - 140px); overflow-y: auto; scrollbar-width: thin; }

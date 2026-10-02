@@ -148,7 +148,8 @@
       <div class="alert alert-info" id="demo-note" hidden><p>Демо-режим: компании и оценки вымышлены, модель и открытые источники не вызывались. Рабочий режим включается переменной <code>PIPELINE_MODE=live</code>.</p></div>
       <div class="alert alert-warning" id="warnings" hidden></div>
 
-      <div class="toolbar">
+      <div class="workspace">
+        <nav class="lots" aria-label="Лоты">
         <div class="group-controls">
         <div class="segmented" role="tablist" aria-label="Список поставщиков" id="segmented">
           <button role="tab" type="button" id="tab-verified" data-group="verified" aria-selected="true" aria-controls="workspace">Проверенные <span class="count" id="count-verified">0</span></button>
@@ -156,20 +157,18 @@
         </div>
         <p class="group-caption" id="group-caption"></p>
         </div>
+          <p class="lots-head" id="lots-count">Лоты</p>
+          <ul class="lots-list" id="lots-list"></ul>
+          <button class="btn btn-sm btn-soft lots-more" id="lots-more" type="button" hidden>Показать ещё</button>
+        </nav>
+        <div class="lot-results" id="workspace" role="tabpanel" aria-labelledby="tab-verified">
         <label class="search">
           <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg>
           <span class="sr-only">Поиск</span>
           <input type="search" id="search" placeholder="Лот, предмет, поставщик или ИНН" autocomplete="off">
         </label>
-      </div>
-
-      <div class="workspace" id="workspace" role="tabpanel" aria-labelledby="tab-verified">
-        <nav class="lots" aria-label="Лоты">
-          <p class="lots-head" id="lots-count">Лоты</p>
-          <ul class="lots-list" id="lots-list"></ul>
-          <button class="btn btn-sm btn-soft lots-more" id="lots-more" type="button" hidden>Показать ещё</button>
-        </nav>
-        <div class="lot-detail" id="lot-detail" aria-live="polite"></div>
+          <div class="lot-detail" id="lot-detail" aria-live="polite"></div>
+        </div>
       </div>
     </div>
   </section>
