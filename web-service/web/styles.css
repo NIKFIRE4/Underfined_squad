@@ -654,3 +654,5 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .history-error { color: var(--danger); }
 .history-del { margin-top: 10px; flex: none; }
 .history-decisions { padding: 6px 10px; border-radius: var(--radius-sm); background: var(--warn-bg); color: var(--ink-2); }
+.check-subject { margin: 2px 0 0; font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+.check-mismatch { margin: 6px 0 0; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--warn-bg); color: var(--warn); font-size: 12.5px; }

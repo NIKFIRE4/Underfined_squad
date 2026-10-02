@@ -202,8 +202,11 @@ class Handler(BaseHTTPRequestHandler):
         if not (folder / "items.csv").exists():
             self.reply(409, {"error": "Загрузите файлы извещений и ТРУ"})
             return
+        subjects = {}
+        if (folder / "notices.csv").exists():
+            subjects = {n["lot_id"]: n["subject"] for n, _, _, _ in read_csv(folder / "notices.csv", "notices")}
         rows = ((line, row["lot_id"], row) for row, line, _, _ in read_csv(folder / "items.csv", "items"))
-        result = okpd_check.analyze(rows)
+        result = okpd_check.analyze(rows, subjects)
         update_job(job_id, okpd2_check=result["counts"])
         self.reply(200, result)
 
