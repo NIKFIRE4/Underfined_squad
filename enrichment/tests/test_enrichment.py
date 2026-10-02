@@ -441,6 +441,7 @@ def test_api_supplier(db_url, monkeypatch):
 
     monkeypatch.setenv("ENRICHMENT_DB", db_url)
     monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "BACKGROUND_SOURCES", [])  # фон — в test_api_background
     monkeypatch.setattr(api, "_reqnums", lambda: {INN: ["0172200004925000426"]})
     monkeypatch.setattr(api, "_pool_numbers", lambda: {})
     with TestClient(api.app) as client:
@@ -582,6 +583,7 @@ def test_api_rnp_from_registry(db_url, monkeypatch):
 
     monkeypatch.setenv("ENRICHMENT_DB", db_url)
     monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "BACKGROUND_SOURCES", [])
     monkeypatch.setattr(api, "_reqnums", lambda: {})
     monkeypatch.setattr(api, "_pool_numbers", lambda: {})
     with TestClient(api.app) as client:
@@ -592,6 +594,60 @@ def test_api_rnp_from_registry(db_url, monkeypatch):
         assert body["company"]["in_rnp"] is True and "rnp" in body["fetched_now"]
         client.get(f"/api/suppliers/{INN}?refresh=true")
         assert "rnp" in api.LIVE_SOURCES  # refresh не должен портить общий список источников
+
+
+def test_api_background(db_url, monkeypatch):
+    """ПБ и ЕГРЮЛ (капча ФНС) не держат ответ карточки: догружаются в фоне, карточка показывает pending."""
+    import time
+    from fastapi.testclient import TestClient
+    from enrichment import api
+    calls = []
+
+    async def fake_fetch_all(http, inn, sources, **kw):
+        calls.append((tuple(sources), kw.get("timeout")))
+        out = []
+        for src in sources:
+            r = SourceResult(src, inn)
+            r.add("status" if src == "pb" else f"{src}_seen", "Действующая организация" if src == "pb" else True, now_utc())
+            out.append(r)
+        return out
+
+    monkeypatch.setenv("ENRICHMENT_DB", db_url)
+    monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "_reqnums", lambda: {})
+    monkeypatch.setattr(api, "_pool_numbers", lambda: {})
+    with TestClient(api.app) as client:
+        client.get(f"/api/suppliers/{INN}")
+        for _ in range(100):
+            st = client.get("/api/suppliers/prefetch").json()
+            if len(calls) > 2 and not st["queue"] and not any(v["current"] for v in st["sources"].values()):
+                break
+            time.sleep(0.02)
+        # фон и ответ идут параллельно — различаем вызовы по параметрам, а не по порядку
+        live = [src for src, timeout in calls if timeout == api.SOURCE_TIMEOUT]
+        assert len(live) == 1 and not {"pb", "egrul"} & set(live[0])  # ответ не ждал источники с капчей
+        assert (("pb",), 120) in calls and (("egrul",), 120) in calls  # у каждого источника своя очередь
+        card = client.get(f"/api/suppliers/{INN}?offline=true").json()
+        assert card["pending"] == [] and card["company"]["is_active"] is True
+        # уже полученные не ставятся в очередь повторно
+        assert client.post("/api/suppliers/prefetch", json={"items": [{"inn": INN, "score": 90}]}).json()["queued"] == 0
+
+
+def test_background_order_by_score():
+    import asyncio
+    from enrichment import api
+    api.state["bg"] = api._bg_state()
+    for inn, score in [("1", 10), ("2", 90), ("3", 50), ("1", 95)]:  # повтор с высшей оценкой поднимает ИНН
+        api._bg_put(inn, -score)
+    api._bg_put("4", api.BG_TOP)  # открытая карточка — раньше всех
+    api._bg_put("5", -99, sources=["egrul"])  # только туда, где данных ещё нет
+    for src, expected in [("pb", ["4", "1", "2", "3"]), ("egrul", ["4", "5", "1", "2", "3"])]:
+        b, order = api.state["bg"]["sources"][src], []
+        while not b["queue"].empty():
+            prio, _, inn, _ = b["queue"].get_nowait()
+            if b["queued"].get(inn) == prio:
+                order.append(inn)
+        assert order == expected, src
 
 
 def test_contacts_direct_contract_number():

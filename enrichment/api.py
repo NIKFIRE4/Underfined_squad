@@ -39,6 +39,11 @@ from .webservice import SOURCE_LABELS, _url
 log = logging.getLogger("enrichment")
 
 LIVE_SOURCES = ["pb", "bo", "rmsp", "rnp", "egrul", "contacts"]
+# ФНС закрывает «Прозрачный бизнес» и ЕГРЮЛ капчей через 6–30 запросов: в ответе карточки их не ждём,
+# а догружаем в фоне — сначала кандидатов с высшей оценкой; карточка обновится, когда данные придут
+BACKGROUND_SOURCES = ["pb", "egrul"]
+BG_TOP = -1e9         # приоритет открытой пользователем карточки — раньше всех
+BG_MAX_ATTEMPTS = 3   # капча держится дольше — ИНН снова в очередь, но не бесконечно
 SOURCE_TIMEOUT = float(os.environ.get("ENRICH_API_SOURCE_TIMEOUT", "15"))
 BATCH_MAX = 50
 BATCH_CONCURRENCY = 4
@@ -50,7 +55,11 @@ state: dict = {}
 async def lifespan(_: FastAPI):
     state["engine"] = storage.connect(os.environ.get("ENRICHMENT_DB", "sqlite:///data/enrichment.db"))
     state["http"] = Http()
+    state["bg"] = _bg_state()
+    workers = [asyncio.create_task(_bg_worker(src)) for src in BACKGROUND_SOURCES]
     yield
+    for w in workers:
+        w.cancel()
     await state["http"].aclose()
 
 
@@ -119,6 +128,8 @@ class SupplierCard(BaseModel):
     kind: Literal["ul", "ip"] = Field(description="ul — юрлицо, ip — ИП")
     cached: bool = Field(description="true — ответ целиком из базы, в интернет не ходили")
     fetched_now: list[str] = Field(description="Источники, запрошенные в этом вызове")
+    pending: list[str] = Field(default_factory=list, description=(
+        "Источники с капчей ФНС (pb, egrul), которые догружаются в фоне; пусто — всё получено. Повторите запрос позже"))
     company: dict[str, Any] = Field(description=(
         "Плоская карточка (витрина companies + все поля): name_full, name_short, ogrn, kpp, region_code, address, "
         "status, is_active, reg_date, age_years, director, okved_main, okved_extra, is_smp, smp_category, employees, "
@@ -232,6 +243,90 @@ def _hints(inn: str) -> dict:
             "contract_numbers": numbers}
 
 
+def _bg_state() -> dict:
+    """Своя очередь на каждый источник: капча ПБ не задерживает ЕГРЮЛ, и наоборот."""
+    return {"seq": 0, "sources": {src: {"queue": asyncio.PriorityQueue(), "queued": {}, "attempts": {}, "done": 0,
+                                        "current": None} for src in BACKGROUND_SOURCES}}
+
+
+def _bg_pending(inn: str) -> list[str]:
+    """Источники, которые по этому ИНН ещё догружаются в фоне."""
+    bg = state.get("bg")
+    return [src for src, b in (bg or {}).get("sources", {}).items() if inn in b["queued"] or b["current"] == inn]
+
+
+def _bg_put(inn: str, priority: float, force: bool = False, sources: list[str] | None = None) -> bool:
+    """В очереди источников, если ИНН там ещё нет или новый приоритет выше. Меньше число — раньше."""
+    bg, added = state["bg"], False
+    for src in sources or bg["sources"]:
+        b = bg["sources"][src]
+        if not force and inn in b["queued"] and b["queued"][inn] <= priority:
+            continue
+        b["queued"][inn] = priority
+        bg["seq"] += 1
+        b["queue"].put_nowait((priority, bg["seq"], inn, force))
+        added = True
+    return added
+
+
+async def _bg_worker(src: str) -> None:
+    b = state["bg"]["sources"][src]
+    while True:
+        priority, _, inn, force = await b["queue"].get()
+        if b["queued"].get(inn) != priority:
+            continue  # устаревшая запись: ИНН уже поставлен выше или обработан
+        b["current"] = inn
+        b["queued"].pop(inn, None)
+        try:
+            runs = await asyncio.to_thread(storage.load_runs, state["engine"], inn)
+            if force or runs.get(src) != "ok":
+                # капча: лимитер источника встаёт на паузу, ИНН возвращается в очередь — до BG_MAX_ATTEMPTS раз
+                results = await fetch_all(state["http"], inn, [src], captcha_retries=0, timeout=120)
+                await asyncio.to_thread(storage.save_results, state["engine"], results)
+                if any(r.error == "captcha" for r in results):
+                    n = b["attempts"][inn] = b["attempts"].get(inn, 0) + 1
+                    if n < BG_MAX_ATTEMPTS:
+                        _bg_put(inn, priority, sources=[src])
+            b["done"] += 1
+        except Exception as e:  # noqa: BLE001 — фон не должен падать из-за одного ИНН
+            log.warning("фон %s %s: %s", src, inn, e)
+        finally:
+            b["current"] = None
+
+
+class PrefetchItem(BaseModel):
+    inn: str
+    score: float = Field(0, description="Оценка кандидата: чем выше, тем раньше догрузится")
+
+
+class PrefetchRequest(BaseModel):
+    items: list[PrefetchItem] = Field(..., max_length=2000)
+
+
+@app.post("/api/suppliers/prefetch", tags=["Контрагенты"], summary="Догрузить в фоне источники с капчей")
+async def prefetch(req: PrefetchRequest):
+    """ФНС «Прозрачный бизнес» и ЕГРЮЛ для списка кандидатов — в фоне, от высшей оценки к низшей.
+    Уже полученные пропускаются. Ответ сразу; результат — в карточке (поле pending пустеет)."""
+    runs = await asyncio.to_thread(storage.runs_by_inn, state["engine"], [i.inn for i in req.items], BACKGROUND_SOURCES)
+    added = 0
+    for item in req.items:
+        todo = [s for s in BACKGROUND_SOURCES if runs.get(item.inn, {}).get(s) != "ok"]
+        if is_valid_inn(item.inn) and todo:
+            added += _bg_put(item.inn, -item.score, sources=todo)
+    return {"queued": added, "queue": _bg_size()}
+
+
+def _bg_size() -> int:
+    return sum(len(b["queued"]) for b in state["bg"]["sources"].values())
+
+
+@app.get("/api/suppliers/prefetch", tags=["Служебное"], summary="Состояние фоновой догрузки")
+async def prefetch_status():
+    """По каждому источнику: сколько ИНН в очереди, сколько обработано, кто сейчас."""
+    return {"queue": _bg_size(), "sources": {src: {"queue": len(b["queued"]), "done": b["done"], "current": b["current"]}
+                                             for src, b in state["bg"]["sources"].items()}}
+
+
 async def _enrich(inn: str, refresh: bool, offline: bool = False) -> dict:
     if not is_valid_inn(inn):
         raise HTTPException(400, f"Некорректный ИНН {inn}: 10 цифр для юрлица, 12 для ИП, проверка контрольной суммы")
@@ -239,6 +334,10 @@ async def _enrich(inn: str, refresh: bool, offline: bool = False) -> dict:
     # offline — ответ за миллисекунды для списков кандидатов: недоступный источник (капча ФНС) не держит весь лот
     # list(...) — копия: ниже todo меняется, общий LIVE_SOURCES трогать нельзя
     todo = [] if offline else list(LIVE_SOURCES) if refresh else [s for s in LIVE_SOURCES if s not in runs]
+    # источники с капчей — в фоновую очередь первыми (и те, что раньше упёрлись в капчу), ответ их не ждёт
+    if not offline and (bg_todo := [src for src in BACKGROUND_SOURCES if refresh or runs.get(src) != "ok"]):
+        _bg_put(inn, BG_TOP, force=refresh, sources=bg_todo)
+    todo = [src for src in todo if src not in BACKGROUND_SOURCES]
     fetched = []
     if "rnp" in todo and await asyncio.to_thread(_rnp_registry_fresh):
         # РНП скачан целиком (rnp-dump) — отвечаем из него мгновенно, без запроса в ЕИС
@@ -256,6 +355,7 @@ async def _enrich(inn: str, refresh: bool, offline: bool = False) -> dict:
         raise HTTPException(404, f"По ИНН {inn} ничего не найдено ни в одном источнике")
     card["cached"] = not fetched
     card["fetched_now"] = fetched
+    card["pending"] = _bg_pending(inn)
     return card
 
 

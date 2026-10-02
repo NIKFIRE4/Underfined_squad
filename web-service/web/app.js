@@ -773,6 +773,7 @@ async function loadCompany(c, box) {
     const card = await api(`/api/suppliers/${c.supplier_inn}/card`, {signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)])});
     if (controller.signal.aborted) return;
     renderCompany(c, card, box);
+    if (card.pending?.length) watchPending(c, box, controller);
   } catch (error) {
     if (controller.signal.aborted) return;
     const retry = h('button', {class: 'link-btn', type: 'button', text: 'Повторить', onclick: () => loadCompany(c, box)});
@@ -782,6 +783,24 @@ async function loadCompany(c, box) {
     box.replaceChildren(section('О компании', h('p', {class: 'note'}, text, error.status === 404 || error.status === 503 ? null : retry)));
   }
   box.removeAttribute('aria-busy');
+}
+
+// ФНС «Прозрачный бизнес» и ЕГРЮЛ закрываются капчей — сервис догружает их в фоне (сначала кандидатов
+// с высшей оценкой). Пока карточка открыта, переспрашиваем базу и перерисовываем, когда данные пришли.
+const PENDING_POLL_MS = 8000, PENDING_MAX_MS = 5 * 60000;
+const PENDING_NAMES = {pb: 'ФНС «Прозрачный бизнес»', egrul: 'ЕГРЮЛ'};
+async function watchPending(c, box, controller) {
+  const started = Date.now();
+  while (!controller.signal.aborted && box.isConnected && Date.now() - started < PENDING_MAX_MS) {
+    await new Promise(r => setTimeout(r, PENDING_POLL_MS));
+    if (controller.signal.aborted || !box.isConnected) return;
+    try {
+      const card = await api(`/api/suppliers/${c.supplier_inn}/card`, {signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)])});
+      if (controller.signal.aborted) return;
+      if (!card.pending?.length) { renderCompany(c, card, box); return; }
+    } catch { /* сеть или сервис — попробуем в следующий раз */ }
+  }
+  box.querySelector('.pending-note')?.replaceChildren('Фоновая догрузка ещё идёт — откройте карточку позже.');
 }
 
 function renderCompany(c, card, box) {
@@ -801,6 +820,10 @@ function renderCompany(c, card, box) {
 
   const parts = [];
   const src = sourceResolver(card);
+  if (card.pending?.length) {
+    parts.push(h('p', {class: 'pending-note', role: 'status'}, h('span', {class: 'pending-dot', 'aria-hidden': 'true'}),
+      `${card.pending.map(s => PENDING_NAMES[s] || s).join(' и ')} — догружаются в фоне (у ФНС капча), карточка обновится сама.`));
+  }
   const flags = card.risk_flags || [];
   const active = co.is_active === true ? ['ok', co.status || 'Действующая'] : co.is_active === false ? ['check', co.status || 'Недействующая'] : ['check', 'Статус не подтверждён'];
   const role = card.role || {};

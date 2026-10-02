@@ -580,3 +580,7 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .origin-note { margin: 0 0 4px; padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--line-strong); background: var(--soft); font-size: 13px; line-height: 1.55; color: var(--ink-2); }
 .origin-note strong { color: var(--ink); }
 .origin-src { display: inline; }
+.pending-note { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; padding: 10px 14px; border-radius: 12px; background: var(--blue-50); color: var(--blue-deep); font-size: 13px; }
+.pending-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); flex: none; animation: pending-pulse 1.2s ease-in-out infinite; }
+@keyframes pending-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .pending-dot { animation: none; } }

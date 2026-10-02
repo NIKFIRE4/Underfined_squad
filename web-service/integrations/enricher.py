@@ -2,7 +2,9 @@
 
   POST {ENRICH_API_URL}/api/suppliers/batch   ИНН кандидатов лота → карточки компаний, только из базы (offline)
   GET  {ENRICH_API_URL}/api/suppliers/{inn}   одна карточка для интерфейса (прокси /api/suppliers/{inn}/card);
-                                              здесь недостающие источники опрашиваются вживую
+                                              здесь недостающие источники опрашиваются вживую, кроме ПБ и ЕГРЮЛ
+  POST {ENRICH_API_URL}/api/suppliers/prefetch кандидаты лота с оценкой → ПБ и ЕГРЮЛ догружаются в фоне,
+                                              от высшей оценки к низшей (у ФНС капча); карточка отдаёт pending
 
 ENRICH_API_URL — адрес сервиса (по умолчанию http://127.0.0.1:8010); пустая строка отключает обогащение.
 ENRICH_API_TIMEOUT — таймаут одного запроса, с (по умолчанию 60: карточка ИНН, которого нет в базе, опрашивает источники).
@@ -79,6 +81,17 @@ def fetch_cards(inns: list[str]) -> dict[str, dict]:
     return cards
 
 
+def prefetch(candidates: list[Candidate]) -> None:
+    """ПБ и ЕГРЮЛ (капча ФНС) — в фоновую очередь API, от высшей оценки к низшей. Ошибки не мешают выдаче."""
+    items = [{"inn": c.supplier_inn, "score": float(c.score or 0)} for c in candidates if c.supplier_inn]
+    if not items:
+        return
+    try:
+        _request("POST", "/api/suppliers/prefetch", {"items": items}, timeout=5)
+    except EnrichmentError as e:
+        logging.info("Фоновая догрузка не поставлена: %s", e)
+
+
 def _sources(card: dict) -> list[dict]:
     urls = {s["source"]: (s["name"], s["url"]) for s in card.get("sources_status", [])}
     out = []
@@ -141,4 +154,6 @@ def enrich(lot: Lot, candidates: list[Candidate]) -> list[Candidate]:
             elif not _excluded(card["company"], smp_only):
                 result.append(_apply(c, card))
     # «Непроверенные»: компании из открытых реестров, которых нет в истории закупок (integrations/new_pool.py)
-    return result + new_pool.find(lot, REGIONS, exclude=set(inns))
+    result += new_pool.find(lot, REGIONS, exclude=set(inns))
+    prefetch(result)
+    return result

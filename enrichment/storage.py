@@ -247,6 +247,18 @@ def load_runs(engine: Engine, inn: str) -> dict[str, str]:
         return {r["source"]: r["status"] for r in rows}
 
 
+def runs_by_inn(engine: Engine, inns: list[str], sources: list[str]) -> dict[str, dict[str, str]]:
+    """{inn: {source: status}} для списка ИНН — одним запросом."""
+    out: dict[str, dict[str, str]] = {}
+    with engine.connect() as conn:
+        for i in range(0, len(inns), 1000):
+            rows = conn.execute(select(enrichment_runs.c.inn, enrichment_runs.c.source, enrichment_runs.c.status)
+                                .where(enrichment_runs.c.inn.in_(inns[i:i + 1000]), enrichment_runs.c.source.in_(sources)))
+            for inn, src, st in rows:
+                out.setdefault(inn, {})[src] = st
+    return out
+
+
 def done_inns(engine: Engine, sources: list[str]) -> set[str]:
     """ИНН, у которых все указанные источники уже отработали успешно."""
     with engine.connect() as conn:

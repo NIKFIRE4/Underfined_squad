@@ -5,6 +5,21 @@ from integrations import enricher
 from models import Candidate, Lot
 
 
+_real_prefetch = enricher.prefetch
+
+
+def setUpModule():
+    # фоновая догрузка ходит в живой API обогащения — в тестах только запоминаем, кого отправили
+    global _prefetch_patch, SENT
+    SENT = []
+    _prefetch_patch = patch.object(enricher, "prefetch", side_effect=lambda cands: SENT.append([(c.supplier_inn, c.score) for c in cands]))
+    _prefetch_patch.start()
+
+
+def tearDownModule():
+    _prefetch_patch.stop()
+
+
 def card(inn, **company):
     co = {"inn": inn, "name_short": f'ООО "К{inn[-2:]}"', "kpp": "780601001", "region_name": "Санкт-Петербург",
           "is_smp": True, "is_active": True, "in_rnp": False, "enrichment_status": "full", **company}
@@ -39,6 +54,17 @@ class EnricherTests(unittest.TestCase):
         self.assertEqual([c.status for c in out[:2]], ["Требует проверки", "Требует проверки"])
         self.assertIn("Риск: Компания моложе года", out[1].reasons)
         self.assertEqual(out[2].enrichment_status, "Нет данных в источниках")
+
+    def test_candidates_go_to_background_queue_with_score(self):
+        SENT.clear()
+        with patch.object(enricher, "fetch_cards", return_value={"7804428656": card("7804428656")}):
+            enricher.enrich(self.lot(), [self.cand("7804428656")])
+        self.assertEqual(SENT[-1], [("7804428656", 90)])
+        with patch.object(enricher, "_request") as req:
+            _real_prefetch([self.cand("7804428656"), Candidate(supplier_name="без ИНН")])
+            req.assert_called_once_with("POST", "/api/suppliers/prefetch", {"items": [{"inn": "7804428656", "score": 90.0}]}, timeout=5)
+        with patch.object(enricher, "_request", side_effect=enricher.EnrichmentError(502, "down")):
+            _real_prefetch([self.cand("7804428656")])  # сбой фона не ломает выдачу
 
     def test_unreachable_service_raises(self):
         with patch.object(enricher, "API_URL", "http://127.0.0.1:9"):
