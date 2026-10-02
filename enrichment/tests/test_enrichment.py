@@ -438,6 +438,12 @@ def test_api_supplier(db_url, monkeypatch):
         client.get(f"/api/suppliers/{INN}?refresh=true")
         assert len(calls) == 2
 
+        # offline — только из базы: известный ИНН отдаётся без опроса, неизвестный — 404
+        assert client.get(f"/api/suppliers/{INN}?offline=true&refresh=true").json()["cached"] is True
+        assert client.get("/api/suppliers/7707083893?offline=true").status_code == 404
+        b = client.post("/api/suppliers/batch", json={"inns": [INN, "7707083893"], "offline": True}).json()["items"]
+        assert b[0]["cached"] is True and "error" in b[1] and len(calls) == 2
+
         assert client.get("/api/suppliers/7707049389").status_code == 400  # контрольная сумма
         b = client.post("/api/suppliers/batch", json={"inns": [INN, "123"]}).json()["items"]
         assert b[0]["inn"] == INN and "error" in b[1]

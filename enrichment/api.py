@@ -1,7 +1,8 @@
 """HTTP API обогащения: ИНН → всё, что известно о компании из открытых источников.
 
-  GET  /api/suppliers/{inn}            карточка (путь из ТЗ, раздел 8); ?refresh=true — перезапросить источники
-  POST /api/suppliers/batch            {"inns": [...], "refresh": false} — до 50 ИНН за запрос
+  GET  /api/suppliers/{inn}            карточка (путь из ТЗ, раздел 8); ?refresh=true — перезапросить источники,
+                                       ?offline=true — только из базы, без похода в интернет
+  POST /api/suppliers/batch            {"inns": [...], "refresh": false, "offline": false} — до 50 ИНН за запрос
   GET  /api/health                     состояние сервиса и базы
 
 Логика «один раз заполнить»: база заполняется заранее (scripts/enrich_all.sh или дамп), а эндпоинт
@@ -210,11 +211,12 @@ def _hints(inn: str) -> dict:
     return {"reqnums": _reqnums().get(inn), "name": facts.get("name_short") or facts.get("name_full")}
 
 
-async def _enrich(inn: str, refresh: bool) -> dict:
+async def _enrich(inn: str, refresh: bool, offline: bool = False) -> dict:
     if not is_valid_inn(inn):
         raise HTTPException(400, f"Некорректный ИНН {inn}: 10 цифр для юрлица, 12 для ИП, проверка контрольной суммы")
     runs = await asyncio.to_thread(storage.load_runs, state["engine"], inn)
-    todo = LIVE_SOURCES if refresh else [s for s in LIVE_SOURCES if s not in runs]
+    # offline — ответ за миллисекунды для списков кандидатов: недоступный источник (капча ФНС) не держит весь лот
+    todo = [] if offline else LIVE_SOURCES if refresh else [s for s in LIVE_SOURCES if s not in runs]
     fetched = []
     if todo:
         hints = await asyncio.to_thread(_hints, inn) if "contacts" in todo else None
@@ -234,15 +236,17 @@ async def _enrich(inn: str, refresh: bool) -> dict:
 async def get_supplier(
     inn: str = PathParam(..., description="ИНН: 10 цифр — юрлицо, 12 — ИП", examples=["7804428656"]),
     refresh: bool = Query(False, description="перезапросить все онлайн-источники, даже если данные уже есть"),
+    offline: bool = Query(False, description="только из базы, без похода в интернет; ИНН, которого нет в базе, — 404"),
 ):
     """Из базы, если ИНН уже обогащён; иначе — опрос источников (до ~15 с на источник), запись в базу и ответ."""
-    return await _enrich(inn.strip(), refresh)
+    return await _enrich(inn.strip(), refresh, offline)
 
 
 class BatchRequest(BaseModel):
     inns: list[str] = Field(..., max_length=BATCH_MAX, description=f"До {BATCH_MAX} ИНН",
                             examples=[["7804428656", "7707083893"]])
     refresh: bool = False
+    offline: bool = Field(False, description="только из базы, без похода в интернет — для списков кандидатов")
 
 
 @app.post("/api/suppliers/batch", response_model=BatchResponse, tags=["Контрагенты"],
@@ -254,7 +258,7 @@ async def batch(req: BatchRequest):
     async def one(inn: str):
         async with sem:
             try:
-                return await _enrich(inn.strip(), req.refresh)
+                return await _enrich(inn.strip(), req.refresh, req.offline)
             except HTTPException as e:
                 return {"inn": inn, "error": e.detail}
 
