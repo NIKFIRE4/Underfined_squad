@@ -99,7 +99,7 @@ def links(inn: str, c: dict) -> list[dict]:
     if c.get("bo_id"):
         add("Бухотчётность (ГИР БО)", f"https://bo.nalog.gov.ru/organizations-card/{c['bo_id']}", "profile")
     add("Реестр МСП", f"https://rmsp.nalog.ru/search.html?query={inn}", "profile")
-    add("ФНС «Прозрачный бизнес»", f"https://pb.nalog.ru/search.html#quick-result?queryAll={inn}", "profile")
+    add("ФНС «Прозрачный бизнес»", f"https://pb.nalog.ru/search.html#mode=search-all&queryAll={inn}&page=1&pageSize=10", "profile")
     add("Реестр недобросовестных поставщиков", f"https://zakupki.gov.ru/epz/dishonestsupplier/search/results.html?searchString={inn}", "check")
     return out
 

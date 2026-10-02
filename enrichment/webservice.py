@@ -57,7 +57,7 @@ def _url(source: str, inn: str, card: dict) -> str:
         return f"https://bo.nalog.gov.ru/organizations-card/{bo_id}"
     return {
         "egrul": "https://egrul.nalog.ru/",
-        "pb": f"https://pb.nalog.ru/search.html#quick-result?queryAll={inn}",
+        "pb": f"https://pb.nalog.ru/search.html#mode=search-all&queryAll={inn}&page=1&pageSize=10",
         "rmsp": f"https://rmsp.nalog.ru/search.html?query={inn}",
         "bo": f"https://bo.nalog.gov.ru/search?query={inn}",
         "rnp": f"https://zakupki.gov.ru/epz/dishonestsupplier/search/results.html?searchString={inn}",
