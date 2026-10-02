@@ -83,16 +83,27 @@ async def cmd_batch(args) -> None:
         inns = inns[: args.limit]
     log.info("batch: %d INN, sources=%s, concurrency=%d", len(inns), args.sources, args.concurrency)
 
-    reqnums, names = {}, {}
+    reqnums, names, numbers = {}, {}, {}
     if "contacts" in args.sources:  # подсказки для поиска контракта: номера закупок и название
         reqnums = history.won_reqnums(args.suppliers)
+        numbers = history.pool_contract_numbers()
+        with engine.connect() as conn:  # уже найденный контракт — перепроверка напрямую, без поиска
+            for inn, url in conn.execute(select(storage.company_facts.c.inn, storage.company_facts.c.value).where(
+                    storage.company_facts.c.field == "contact_contract_url")):
+                numbers.setdefault(inn, []).insert(0, str(url).rsplit("=", 1)[-1])
+        if args.pool:
+            known = set(supplier_inns(args.suppliers))  # один раз, а не на каждый ИНН
+            inns = [i for i in numbers if is_valid_inn(i) and i not in known]
+            if not args.force:
+                done = storage.done_inns(engine, args.sources)
+                inns = [i for i in inns if i not in done]
         with engine.connect() as conn:
             names = {i: n1 or n2 for i, n1, n2 in conn.execute(
                 select(storage.companies.c.inn, storage.companies.c.name_short, storage.companies.c.name_full))}
         log.info("contacts: номера закупок для %d ИНН, названия для %d", len(reqnums), len(names))
         inns.sort(key=lambda i: i not in reqnums)  # стабильно: внутри групп порядок по активности
-        if not args.contacts_by_name:  # без номера закупки и без поиска по названию искать нечем
-            inns = [i for i in inns if i in reqnums]
+        if not args.contacts_by_name:  # без номеров закупки/контракта и без поиска по названию искать нечем
+            inns = [i for i in inns if i in reqnums or i in numbers]
 
     queue: asyncio.Queue[str] = asyncio.Queue()
     for i in inns:
@@ -107,7 +118,7 @@ async def cmd_batch(args) -> None:
             except asyncio.QueueEmpty:
                 return
             try:
-                hints = {"reqnums": reqnums.get(inn),
+                hints = {"reqnums": reqnums.get(inn), "contract_numbers": numbers.get(inn),
                          "name": names.get(inn) if args.contacts_by_name else None}
                 row = await enrich(http, engine, inn, args.sources, hints)
                 stats[row["enrichment_status"]] += 1
@@ -325,6 +336,8 @@ def main() -> None:
     b.add_argument("--limit", type=int)
     b.add_argument("--concurrency", type=int, default=6)
     b.add_argument("--force", action="store_true", help="перезапросить уже обогащённые")
+    b.add_argument("--pool", action="store_true",
+                   help="контакты для пула новых контрагентов (номера контрактов из dataset/new_counterparties_pg)")
     b.add_argument("--contacts-by-name", action="store_true",
                    help="контакты: искать контракт и по названию (4 запроса на ИНН, находит редко)")
     b.add_argument("--missing-status", action="store_true",

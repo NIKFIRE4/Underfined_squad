@@ -78,3 +78,20 @@ def won_reqnums(suppliers: str = SUPPLIERS, notices: str = NOTICES) -> dict[str,
           .group_by("supplier_inn", maintain_order=True).agg(pl.col("reqnum").unique(maintain_order=True).head(5))
           .collect())
     return {r["supplier_inn"].strip(): r["reqnum"] for r in df.iter_rows(named=True)}
+
+
+POOL_CONTRACTS = "dataset/new_counterparties_pg/new_cp_contracts.csv.gz"
+
+
+def pool_contract_numbers(path: str = POOL_CONTRACTS, per_inn: int = 3) -> dict[str, list[str]]:
+    """ИНН → реестровые номера контрактов ЕИС по 44-ФЗ (свежие первыми) из датасета новых контрагентов.
+    Нет файла — пусто."""
+    if not Path(path).exists():
+        return {}
+    df = (pl.scan_csv(path, infer_schema=False)
+          .filter((pl.col("federal_law") == "44-ФЗ") & pl.col("register_number").str.contains(r"^\d{19}$"))
+          .select("supplier_inn", "register_number", "contract_date").unique(["supplier_inn", "register_number"])
+          .sort("contract_date", descending=True)
+          .group_by("supplier_inn", maintain_order=True).agg(pl.col("register_number").head(per_inn))
+          .collect())
+    return {r["supplier_inn"]: r["register_number"] for r in df.iter_rows(named=True)}

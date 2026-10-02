@@ -213,9 +213,22 @@ def _reqnums() -> dict:
         return {}
 
 
+@lru_cache(maxsize=1)
+def _pool_numbers() -> dict:
+    try:
+        return history.pool_contract_numbers()
+    except Exception as e:  # noqa: BLE001
+        log.warning("pool contracts: %s", e)
+        return {}
+
+
 def _hints(inn: str) -> dict:
     facts = {f.field: f.value for f in storage.load_facts(state["engine"], inn)}
-    return {"reqnums": _reqnums().get(inn), "name": facts.get("name_short") or facts.get("name_full")}
+    numbers = list(_pool_numbers().get(inn, []))
+    if facts.get("contact_contract_url"):
+        numbers.insert(0, str(facts["contact_contract_url"]).rsplit("=", 1)[-1])
+    return {"reqnums": _reqnums().get(inn), "name": facts.get("name_short") or facts.get("name_full"),
+            "contract_numbers": numbers}
 
 
 async def _enrich(inn: str, refresh: bool) -> dict:
