@@ -84,6 +84,24 @@ def _positive(name, r):
         return 'Зарегистрирован в Санкт-Петербурге'
     if name == 's_n_part' and v > 0:
         return f'{_parts(v)} в закупках всего'
+    if name == 'e_okved_main' and v == 1:
+        return 'Основной вид деятельности (ОКВЭД) совпадает с группой ОКПД2 лота'
+    if name == 'e_okved_any' and v == 1:
+        return 'Группа ОКПД2 лота есть среди его видов деятельности (ОКВЭД)'
+    if name == 'e_okved_class' and v == 1:
+        return 'Класс ОКПД2 лота есть среди его видов деятельности (ОКВЭД)'
+    if name == 'e_rev_log' and v > 0:
+        return f'Выручка за прошлый год: {_money(v)}'
+    if name == 'e_rev_to_price' and v >= math.log(10):
+        return f'Выручка за прошлый год в {math.exp(v):,.0f} раз больше НМЦК'.replace(',', ' ')
+    if name == 'e_margin' and v > 0:
+        return f'Прибыльная компания: рентабельность {v:.0%}'
+    if name == 'e_age_years' and v >= 3:
+        return f'Работает {int(v)} {plural(int(v), "год", "года", "лет")}'
+    if name == 'e_gisp' and v == 1:
+        return 'Продукция в реестре промышленной продукции (ГИСП)'
+    if name == 'e_software' and v == 1:
+        return 'Продукт в реестре российского ПО'
     return None
 
 
@@ -113,7 +131,26 @@ def _negative(name, r):
         return f'Низкая доля побед: {v:.0%} участий'
     if name == 'text_cos' and not nan and v < 0.5:
         return f'Предмет закупки мало похож на его прошлые контракты (сходство {v:.2f})'
+    if name == 'e_okved_any' and v == 0:
+        return 'Группы ОКПД2 лота нет среди его видов деятельности (ОКВЭД)'
+    if name == 'e_neg_equity' and v == 1:
+        return 'Отрицательный капитал по отчётности за прошлый год'
+    if name == 'e_margin' and not nan and v < 0:
+        return 'Убыток по отчётности за прошлый год'
+    if name == 'e_rev_to_price' and not nan and v < 0:
+        return 'Выручка за прошлый год меньше НМЦК лота'
+    if name == 'e_age_years' and not nan and v < 1:
+        return 'Компания моложе года'
     return None
+
+
+def _money(log_v):
+    """log(1+₽) → «12,3 млн ₽»."""
+    x = math.expm1(log_v)
+    for div, unit in ((1e9, 'млрд'), (1e6, 'млн'), (1e3, 'тыс.')):
+        if x >= div:
+            return f'{x / div:.1f} {unit} ₽'.replace('.', ',')
+    return f'{x:.0f} ₽'
 
 
 COUNT = {'s_n_win', 's_n_part', 's_n_customers', 'code_win_l6', 'code_win_l5', 'code_win_l4', 'code_win_l3',
@@ -145,6 +182,22 @@ def value_text(name, v):
     if name == 'price_dev':
         k = math.exp(abs(v))
         return 'как обычно' if k < 1.5 else f'в {k:.0f} раз {"выше" if v > 0 else "ниже"} обычной'
+    if name in ('e_okved_main', 'e_okved_any', 'e_okved_class', 'e_gisp', 'e_software', 'e_neg_equity'):
+        return 'да' if v == 1 else 'нет'
+    if name in ('e_rev_log', 'e_assets_log'):
+        return _money(v)
+    if name == 'e_rev_to_price':
+        k = math.exp(abs(v))
+        return 'около НМЦК' if k < 1.5 else f'в {k:,.0f} раз {"больше" if v > 0 else "меньше"} НМЦК'.replace(',', ' ')
+    if name == 'e_margin':
+        return f'{v:.0%}'
+    if name == 'e_age_years':
+        r = round(v, 1)
+        return f'{int(r)} {plural(int(r), "год", "года", "лет")}' if r == int(r) else f'{r:.1f} года'.replace('.', ',')
+    if name == 'e_msp_cat':
+        return {1: 'микропредприятие', 2: 'малое', 3: 'среднее'}.get(int(v), f'{v:g}')
+    if name in ('e_n_okved', 'e_licenses'):
+        return f'{int(v)}'
     return f'{v:g}'
 
 

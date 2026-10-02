@@ -25,6 +25,7 @@ import pandas as pd
 from .candidates import generate
 from .data import BASE_YEAR, LotBatch, Vocab, code_levels, MAX_KEYS_PER_LEVEL
 from .explain import explain, value_text
+from .enrichment import pair_features
 from .features import FEATURES, build_features
 from .profiles import Snapshot
 from .text import TextModel
@@ -54,6 +55,9 @@ class Recommender:
         cal = d / 'fit_calibration.json'
         self.fit_q = np.array(json.loads(cal.read_text(encoding='utf-8'))['winner_score_quantiles']) if cal.exists() else None
         self.lemm = Lemmatizer()
+        # признаки компании из обогащения (модель v3): таблица поставщиков рядом с моделью
+        enr = d / 'supplier_enrich.parquet'
+        self.enrich = pd.read_parquet(enr) if enr.exists() and any(f.startswith('e_') for f in self.meta['features']) else None
 
     def fit(self, scores):
         """Соответствие 0–100: доля реальных победителей с оценкой ниже. Не делится между кандидатами, как шанс победы."""
@@ -125,7 +129,9 @@ class Recommender:
         if cands.empty:
             return {'top': pd.DataFrame(), 'n_candidates': 0, 'warnings': warnings + ['Кандидаты не найдены'], 'batch': b}
         F = build_features(snap, b, cands)
-        feats = self.meta['features']  # признаки этой модели: первая модель — 33, v2 — больше
+        feats = self.meta['features']
+        if self.enrich is not None:
+            F = self.add_enrichment(F, lot, snap)  # признаки этой модели: первая модель — 33, v2 — больше
         F['score'] = self.booster.predict(F[feats], num_iteration=self.meta['best_iteration'])
         F['p_win'] = softmax_by_lot(F.lot_id, F.score, self.meta['temperature']) * self.meta['candidate_coverage']
         F['fit'] = self.fit(F.score)
@@ -161,6 +167,19 @@ class Recommender:
         res['factors'] = factors
         res['explanation'] = explanations
         return {'top': res, 'n_candidates': int(len(F)), 'warnings': warnings, 'batch': b}
+
+    def add_enrichment(self, F, lot, snap):
+        """Признаки e_* на месяц лота (дата публикации, иначе месяц среза) и основную группу ОКПД2 его позиций."""
+        m = re.match(r'(\d{4})-(\d{2})', str(lot.get('publish_date') or ''))
+        month = (int(m[1]) - BASE_YEAR) * 12 + int(m[2]) - 1 if m else snap.cutoff
+        groups = Counter(c[:5] for c in (i.get('okpd2') for i in lot.get('items') or []) if isinstance(c, str) and len(c) >= 5)
+        pairs = pd.DataFrame({'sid': F.sid.values, 'month': month, 'price_log': F.lot_price_log.values,
+                              'main_group': groups.most_common(1)[0][0] if groups else None})
+        X = pair_features(self.enrich, pairs)
+        F = F.copy()
+        for c in X.columns:
+            F[c] = X[c].values
+        return F
 
     def recommend(self, lot, top_n=20):
         return self.rank(lot, top_n)['top']

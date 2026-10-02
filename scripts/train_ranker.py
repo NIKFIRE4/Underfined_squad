@@ -28,13 +28,16 @@ sys.path.insert(0, str(ROOT))
 
 from recsys import candidates as C  # noqa: E402
 from recsys.data import Dataset, month_label  # noqa: E402
-from recsys.features import FEATURE_SPEC, FEATURES, FEATURES_V1, GROUP, MONOTONE, TITLE, build_features  # noqa: E402
+from recsys.enrichment import pair_features  # noqa: E402
+from recsys.features import FEATURES, FEATURES_V1, FEATURES_V3, FEATURES_V3L, GROUP, MONOTONE_OF, TITLE, build_features  # noqa: E402
 from recsys.inference import softmax_by_lot  # noqa: E402
 from recsys.metrics import evaluate  # noqa: E402
 from recsys.profiles import Snapshot  # noqa: E402
 
 FEAT_DIR = ROOT / 'data' / 'features_v2'
 RESULTS = FEAT_DIR / 'results.json'
+ENRICH_TABLE = ROOT / 'data' / 'enrichment_features' / 'supplier_table.parquet'  # 03_enrichment_features.ipynb
+FEATURE_SETS = {'v1': FEATURES_V1, 'v2': FEATURES, 'v3': FEATURES_V3, 'v3l': FEATURES_V3L}
 VALID_MONTH, TEST_MONTHS = 20, [21, 22, 23]
 # сначала то, что нужно для сравнения на старом окне, затем более ранние месяцы для длинного окна
 GEN_ORDER = [20, 21, 22, 23, 15, 16, 17, 18, 19, 14, 13, 12, 11, 10, 9]
@@ -124,9 +127,37 @@ def parts_of(M):
     return parts
 
 
+_enrich = {}
+
+
+def enrich_tables():
+    """Таблица поставщиков из обогащения и месяц/группа ОКПД2 лотов — для признаков e_* (recsys/enrichment.py)."""
+    if not _enrich:
+        _enrich['E'] = pd.read_parquet(ENRICH_TABLE)
+        lots = pd.read_parquet(ROOT / 'data' / 'processed' / 'lots.parquet', columns=['lot_id', 'publish_date', 'main_group'])
+        d = pd.to_datetime(lots.publish_date)
+        _enrich['lots'] = lots.assign(month=(d.dt.year - 2024) * 12 + d.dt.month - 1)[['lot_id', 'month', 'main_group']]
+    return _enrich['E'], _enrich['lots']
+
+
+def read_part(path, cols, flt=None):
+    """Часть месяца с признаками cols; признаки обогащения e_* досчитываются по sid и лоту."""
+    ecols = [c for c in cols if c.startswith('e_')]
+    if not ecols:
+        return pd.read_parquet(path, columns=cols, filters=flt)
+    base = list(dict.fromkeys([c for c in cols if not c.startswith('e_')] + ['lot_id', 'sid', 'lot_price_log']))
+    F = pd.read_parquet(path, columns=base, filters=flt)
+    E, lots = enrich_tables()
+    pairs = F[['lot_id', 'sid', 'lot_price_log']].merge(lots, on='lot_id', how='left').rename(columns={'lot_price_log': 'price_log'})
+    X = pair_features(E, pairs)
+    for c in ecols:
+        F[c] = X[c].values
+    return F[cols]
+
+
 def read(M, cols, lots=None):
     flt = None if lots is None else [('lot_id', 'in', [int(x) for x in lots])]
-    return pd.concat([pd.read_parquet(p, columns=cols, filters=flt) for p in parts_of(M)], ignore_index=True)
+    return pd.concat([read_part(p, cols, flt) for p in parts_of(M)], ignore_index=True)
 
 
 def to_lgb(F, feats, ref=None):
@@ -157,7 +188,7 @@ def evaluate_test(ds, booster, feats, best, temp, coverage):
     scored, truths = [], []
     for M in TEST_MONTHS:
         for p in parts_of(M):  # по частям: месяц теста целиком — миллионы пар
-            F = pd.read_parquet(p, columns=['lot_id', 'sid', *feats])
+            F = read_part(p, list(dict.fromkeys(['lot_id', 'sid', *feats])))
             F['score'] = booster.predict(F[feats].to_numpy(np.float32), num_iteration=best)
             scored.append(F[['lot_id', 'sid', 'score']])
             del F
@@ -184,7 +215,9 @@ def fit(feats, train_months, valid_lots, rounds=None):
         if M < VALID_MONTH:
             del F
     n = sum(x if isinstance(x, int) else len(x) for _, x in months)
-    X = np.empty((n, len(feats)), dtype=np.float32)
+    # матрица в файле на диске: 11 месяцев полной выборки (~20 млн строк) не помещаются в память целиком
+    X_path = FEAT_DIR / '_train_X.npy'
+    X = np.lib.format.open_memmap(X_path, mode='w+', dtype=np.float32, shape=(n, len(feats)))
     y, groups, lots, at = np.empty(n, dtype=np.int8), [], 0, 0
     for M, F in months:
         if isinstance(F, int):
@@ -203,7 +236,8 @@ def fit(feats, train_months, valid_lots, rounds=None):
     dtrain = lgb.Dataset(X, label=y, group=np.concatenate(groups), feature_name=feats, free_raw_data=True).construct()
     del X, y, months
     gc.collect()
-    params = {**PARAMS, 'monotone_constraints': [MONOTONE[FEATURES.index(f)] for f in feats]}
+    X_path.unlink(missing_ok=True)
+    params = {**PARAMS, 'monotone_constraints': [MONOTONE_OF[f] for f in feats]}
     evals = {}
     if rounds:
         booster = lgb.train(params, dtrain, num_boost_round=rounds)
@@ -235,7 +269,7 @@ def valid_lots():
 
 
 def train(args):
-    feats = FEATURES if args.features == 'v2' else FEATURES_V1
+    feats = FEATURE_SETS[args.features]
     t = time.time()
     booster, best, evals = fit(feats, months_arg(args.train), valid_lots())
     log(f'{args.name}: лучшая итерация {best}, NDCG@10 valid {evals["valid"]["ndcg@10"][best - 1]:.4f}, {time.time() - t:.0f} с')
@@ -254,14 +288,30 @@ def train(args):
     booster.save_model(str(FEAT_DIR / f'{args.name}.txt'), num_iteration=best)
 
 
+def evaluate_model(args):
+    """Готовая модель (models/, models_v2/ …) на тех же тестовых месяцах — для сравнения «было / стало»."""
+    d = ROOT / args.model_dir
+    meta = json.loads((d / 'meta.json').read_text(encoding='utf-8'))
+    booster = lgb.Booster(model_str=(d / 'ranker.txt').read_text(encoding='utf-8').replace('\r\n', '\n'))
+    feats, best = meta['features'], meta['best_iteration']
+    ds, _ = dataset()
+    coverage = json.loads((FEAT_DIR / f'm{VALID_MONTH}' / 'stats.json').read_text())['coverage']
+    res = evaluate_test(ds, booster, feats, best, meta.get('temperature', 1.0), coverage)
+    for seg, m in res.items():
+        log(f'  {seg:36s} R@1 {m["Recall@1"]:.3f}  R@5 {m["Recall@5"]:.3f}  R@10 {m["Recall@10"]:.3f}  '
+            f'MRR {m["MRR"]:.3f}  NDCG@10 {m["NDCG@10"]:.3f}  лотов {m["лотов"]:,}')
+    all_res = json.loads(RESULTS.read_text(encoding='utf-8')) if RESULTS.exists() else {}
+    all_res[args.name] = {'model_dir': args.model_dir, 'features': f'{len(feats)} признаков', 'best_iteration': best, 'test': res}
+    RESULTS.write_text(json.dumps(all_res, ensure_ascii=False, indent=1), encoding='utf-8')
+
+
 def save(args):
     """Артефакты в models_v2: модель (или refit на всех месяцах по декабрь 2025), meta, срезы профилей."""
-    ds, vecs = dataset()
     global TAG
     r = json.loads(RESULTS.read_text(encoding='utf-8'))[args.name]
     TAG = r.get('tag', '')
-    feats = FEATURES if r['features'] == 'v2' else FEATURES_V1
-    out = ROOT / 'models_v2'
+    feats = FEATURE_SETS[r['features']]
+    out = ROOT / args.out
     out.mkdir(exist_ok=True)
     best = r['best_iteration']
     if args.refit:
@@ -274,7 +324,7 @@ def save(args):
     old = json.loads((ROOT / 'models' / 'meta.json').read_text(encoding='utf-8'))
     m0 = int(months_arg(r['train'])[0])
     meta = {
-        'features': feats, 'titles': TITLE, 'groups': GROUP, 'monotone': [MONOTONE[FEATURES.index(f)] for f in feats],
+        'features': feats, 'titles': TITLE, 'groups': GROUP, 'monotone': [MONOTONE_OF[f] for f in feats],
         'params': PARAMS, 'best_iteration': best, 'temperature': r['temperature'], 'candidate_coverage': r['coverage'],
         'price_cap': old['price_cap'], 'train_months': [month_label(m) for m in months_arg(r['train'])],
         'valid_month': month_label(VALID_MONTH), 'test_months': [month_label(m) for m in TEST_MONTHS],
@@ -284,6 +334,19 @@ def save(args):
     (out / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
     for name in ('text_model.joblib', 'vocab.npz', 'suppliers.parquet'):
         shutil.copy(ROOT / 'models' / name, out / name)
+    if any(f.startswith('e_') for f in feats):
+        shutil.copy(ENRICH_TABLE, out / 'supplier_enrich.parquet')  # признаки e_* при инференсе
+    # шкала «Соответствие» 0–100 (как scripts/calibrate_fit.py): процентили оценок реальных победителей валидации
+    booster = lgb.Booster(model_file=str(out / 'ranker.txt'))
+    L = read(VALID_MONTH, ['lot_id', 'label'])
+    W = read(VALID_MONTH, ['label', *feats], L.loc[L.label == 2, 'lot_id'].unique())
+    W = W[W.label == 2]
+    q = np.quantile(booster.predict(W[feats].to_numpy(np.float32), num_iteration=best), np.linspace(0, 1, 101))
+    (out / 'fit_calibration.json').write_text(json.dumps(
+        {'winner_score_quantiles': [round(float(v), 5) for v in q], 'month': month_label(VALID_MONTH), 'winners': int(len(W))},
+        ensure_ascii=False, indent=1), encoding='utf-8')
+    log(f'шкала «Соответствие»: {len(W):,} победителей {month_label(VALID_MONTH)}, медиана оценки {q[50]:.2f}')
+    ds, vecs = dataset()  # после обучения: история и матрица refit вместе не помещаются в память
     for cutoff, folder in [(int(ds.lots.month.max()) + 1, 'snapshot'), (VALID_MONTH + 1, 'snapshot_2025-10')]:
         Snapshot.build(ds, cutoff, vecs).save(out / folder)
         log(f'срез {folder}: cutoff {month_label(cutoff)}')
@@ -297,18 +360,22 @@ def main():
     g.add_argument('--months', type=lambda s: [int(x) for x in s.split(',')])
     t = sub.add_parser('train')
     t.add_argument('name')
-    t.add_argument('--features', choices=['v1', 'v2'], default='v2')
+    t.add_argument('--features', choices=list(FEATURE_SETS), default='v2')
     t.add_argument('--train', default='15-19', help='месяцы обучения, 0 = 2024-01; 15-19 — апрель–август 2025')
+    ev = sub.add_parser('evaluate', help='оценить готовую модель на тестовых месяцах')
+    ev.add_argument('name')
+    ev.add_argument('--model-dir', default='models')
     s = sub.add_parser('save')
     s.add_argument('name')
     s.add_argument('--refit', action='store_true')
+    s.add_argument('--out', default='models_v2', help='папка артефактов относительно корня репозитория')
     p.add_argument('--full', action='store_true', help='обучающие месяцы с 60+30 отрицательными (папки mNN_full)')
     a = p.parse_args()
     global TAG, HARD_NEG, RAND_NEG
     if a.full:
         TAG, HARD_NEG, RAND_NEG = '_full', 60, 30
     FEAT_DIR.mkdir(parents=True, exist_ok=True)
-    {'gen': gen, 'train': train, 'save': save}[a.cmd](a)
+    {'gen': gen, 'train': train, 'save': save, 'evaluate': evaluate_model}[a.cmd](a)
 
 
 if __name__ == '__main__':

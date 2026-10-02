@@ -63,6 +63,17 @@ FEATURES = [f[0] for f in FEATURE_SPEC]
 MONOTONE = [f[2] for f in FEATURE_SPEC]
 GROUP = {f[0]: f[1] for f in FEATURE_SPEC}
 TITLE = {f[0]: f[3] for f in FEATURE_SPEC}
+MONOTONE_OF = {f[0]: f[2] for f in FEATURE_SPEC}
+
+# v3: + сведения о компании из обогащения (recsys/enrichment.py); добавляются к матрице после build_features
+from .enrichment import ENRICH_FEATURES, ENRICH_SPEC  # noqa: E402
+FEATURES_V3 = FEATURES + ENRICH_FEATURES
+# отбор перестановкой на валидации (scripts/perm_importance.py, сентябрь 2025): без этих признаков NDCG@10 не падает —
+# основной ОКВЭД и класс дублируют e_okved_any, ГИСП и отрицательный капитал — на уровне шума
+ENRICH_DROPPED = ['e_okved_main', 'e_okved_class', 'e_gisp', 'e_neg_equity']
+FEATURES_V3L = FEATURES + [f for f in ENRICH_FEATURES if f not in ENRICH_DROPPED]
+for _f in ENRICH_SPEC:
+    GROUP[_f[0]], TITLE[_f[0]], MONOTONE_OF[_f[0]] = _f[1], _f[3], _f[2]
 
 
 WINDOW_SK = ['win_6m', 'part_6m', 'win_3m']  # окна свежести в snap.SK; в срезах первой модели их нет
