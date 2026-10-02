@@ -260,6 +260,8 @@ def resolve(row: dict, choice: dict | None, trust: str | None) -> dict | None:
     """Применяет к строке выбор пользователя (choice — исправленные поля) или автоисправление.
     trust — для противоречия: 'code' (по умолчанию) или 'name'. Возвращает описание изменения или None."""
     before = (row.get("okpd2_code", ""), row.get("product_name", ""))
+    if choice and choice.get("keep"):
+        return None  # пользователь подтвердил: оставить как в файле
     if choice:
         if "okpd2_code" in choice:
             row["okpd2_code"] = normalize(choice["okpd2_code"])

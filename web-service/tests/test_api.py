@@ -268,6 +268,13 @@ class ApiTests(unittest.TestCase):
         names={i['name']:i for l in lot for i in l['items']}
         self.assertEqual(names['Кефир']['okpd2'],'10.51.52.120')
         self.assertEqual(names['Ряженка']['name_original'],'-')
+        # «оставить как есть» — код из файла не трогаем, в предупреждениях это видно
+        job=self.upload_pair(items)
+        self.call(f'/api/jobs/{job}/check','POST',b'')
+        done=self.finish(job,json.dumps({'okpd2':{'mode':'manual','rows':{'2':{'keep':True}}}}).encode())
+        self.assertEqual(done['stats']['kept_as_is'],1)
+        lot=json.loads(self.call(f'/api/jobs/{job}/lots')[1])['lots']
+        self.assertEqual({i['name']:i['okpd2'] for l in lot for i in l['items']}['Кефир'],'02.51.52.140')
 
     def test_okpd2_both_fields_invalid_rejected(self):
         job=self.upload_pair('lot_id;product_name;okpd2_code\n1;Кефир;10.51.52.140\n2;???;02.99\n')

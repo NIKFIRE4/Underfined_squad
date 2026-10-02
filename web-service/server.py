@@ -176,7 +176,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if not isinstance(raw, dict) or raw.get("mode") not in ("auto", "manual"):
             raise ValueError("okpd2.mode должен быть auto или manual")
-        rows = {str(k): {f: str(v[f])[:500] for f in ("okpd2_code", "product_name") if f in v}
+        # строка → исправленные поля или {"keep": true} — оставить как в файле (подтверждено пользователем)
+        rows = {str(k): {"keep": True} if v.get("keep") is True else {f: str(v[f])[:500] for f in ("okpd2_code", "product_name") if f in v}
                 for k, v in (raw.get("rows") or {}).items() if isinstance(v, dict) and str(k).isdigit()}
         trust = {str(k): v for k, v in (raw.get("trust") or {}).items() if str(k).isdigit() and v in ("code", "name")}
         return {"mode": raw["mode"], "rows": rows, "trust": trust,

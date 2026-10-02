@@ -281,20 +281,24 @@ function checkDialog(check) {
     const validNote = h('p', {class: 'check-valid', 'aria-live': 'polite'});
 
     const valueOf = r => state.edits[r.line]?.[r.kind === 'code' ? 'okpd2_code' : 'product_name'] ?? (r.kind === 'code' ? r.code : r.name);
-    const rowValid = r => r.kind === 'code' ? CODE_RE.test(normCode(valueOf(r))) : nameValid(valueOf(r));
+    const original = r => r.kind === 'code' ? normCode(r.code) : String(r.name || '').trim();
+    const current = r => r.kind === 'code' ? normCode(valueOf(r)) : String(valueOf(r)).trim();
+    // «исправлено» — только если значение изменено и стало корректным: исходный неверный код таким не считается
+    const rowFixed = r => current(r) !== original(r) && (r.kind === 'code' ? CODE_RE.test(current(r)) : nameValid(current(r)));
+    const rowBad = r => current(r) !== '' && current(r) !== original(r) && !rowFixed(r);  // введено, но не похоже на код/наименование
     function refresh() {
-      const left = state.mode === 'manual' ? fixRows.filter(r => !rowValid(r)).length : 0;
-      startBtn.disabled = !state.mode || left > 0;
-      validNote.textContent = state.mode === 'manual' ? (left ? `Осталось исправить: ${fmt(left)}` : 'Все строки исправлены') : '';
+      const fixed = fixRows.filter(rowFixed).length;
+      startBtn.disabled = !state.mode;
+      validNote.textContent = state.mode === 'manual' && fixRows.length ? `Исправлено ${fmt(fixed)} из ${fmt(fixRows.length)}` : '';
       for (const el of dialog.querySelectorAll('[data-line]')) {
         const r = fixRows.find(x => String(x.line) === el.dataset.line);
-        if (r) el.dataset.valid = rowValid(r) ? 'yes' : 'no';
+        if (r) el.dataset.valid = rowFixed(r) ? 'yes' : rowBad(r) ? 'no' : '';
       }
     }
     function editRow(r) {
       const field = r.kind === 'code' ? 'okpd2_code' : 'product_name';
       const input = h('input', {class: 'check-input', type: 'text', value: valueOf(r), 'aria-label': `${rowLabel(r)}: ${r.kind === 'code' ? 'код ОКПД2' : 'наименование'}`,
-        placeholder: r.kind === 'code' ? '32.50.13.110' : 'Наименование товара или услуги', oninput: e => { state.edits[r.line] = {[field]: e.target.value}; refresh(); }});
+        placeholder: r.kind === 'code' ? 'Код в формате XX.XX.XX.XXX' : 'Наименование товара или услуги', oninput: e => { state.edits[r.line] = {[field]: e.target.value}; refresh(); }});
       const options = r.kind === 'code' ? (r.options || []).map(o => ({value: o.code, text: `${o.code} — ${o.title || 'код из справочника'}`, why: o.why}))
         : r.suggest?.name ? [{value: r.suggest.name, text: r.suggest.name, why: 'типичное наименование для этого кода'}] : [];
       return h('li', {class: 'check-row', 'data-line': String(r.line)},
@@ -344,21 +348,67 @@ function checkDialog(check) {
     dialog.append(head, h('div', {class: 'check-body'},
       h('div', {class: 'check-scenarios', role: 'radiogroup', 'aria-label': 'Как исправить'},
         scenario('auto', 'Исправить автоматически', 'По справочнику кодов закупок СПб: код — по наименованию позиции, наименование — по коду. Все исправления будут видны в результате.'),
-        scenario('manual', 'Исправлю сам', 'Список строк с ошибками и подсказками. Подбор запустится, когда все строки будут исправлены.')),
+        scenario('manual', 'Исправлю сам', 'Список строк с ошибками и подсказками. Что не успеете исправить — перед запуском предложим исправить автоматически или оставить как есть.')),
       trustAll, manualBox),
       h('footer', {class: 'check-foot'}, validNote,
         h('button', {class: 'btn btn-soft', type: 'button', text: 'Отмена', onclick: () => finish(null)}), startBtn));
-    startBtn.addEventListener('click', () => {
+    startBtn.addEventListener('click', async () => {
       const rows = {};
-      if (state.mode === 'manual') for (const [line, v] of Object.entries(state.edits)) {
-        const r = fixRows.find(x => String(x.line) === line);
-        if (r) rows[line] = r.kind === 'code' ? {okpd2_code: normCode(v.okpd2_code)} : {product_name: v.product_name.trim()};
+      if (state.mode === 'manual') {
+        for (const r of fixRows.filter(rowFixed)) rows[r.line] = r.kind === 'code' ? {okpd2_code: current(r)} : {product_name: current(r)};
+        // не все исправлены — показать оставшиеся и спросить: исправить автоматически или оставить как есть
+        const left = fixRows.filter(r => !rowFixed(r));
+        if (left.length) {
+          const keep = await confirmUnresolved(left, check.truncated);
+          if (keep === null) return;  // «Назад к исправлению»
+          for (const line of keep) rows[line] = {keep: true};
+        }
       }
       finish({mode: state.mode, rows, trust: state.trust, trust_all: state.trustAll});
     });
     document.body.append(dialog);
     dialog.showModal();
     refresh();
+  });
+}
+
+// Подтверждение при неисправленных строках: для всех и для каждой — исправить автоматически или оставить как есть.
+// Возвращает множество строк «оставить как есть» или null («Назад к исправлению»).
+function confirmUnresolved(rows, truncated) {
+  return new Promise(resolve => {
+    const dialog = h('dialog', {class: 'check-dialog check-confirm', 'aria-labelledby': 'confirm-title'});
+    const finish = value => { dialog.close(); dialog.remove(); resolve(value); };
+    dialog.addEventListener('cancel', e => { e.preventDefault(); finish(null); });
+    const choice = {all: 'auto', row: {}};
+    const pick = r => choice.row[r.line] || choice.all;
+    const radios = r => h('div', {class: 'check-radios', role: 'radiogroup', 'aria-label': rowLabel(r)}, [['auto', 'Исправить автоматически'], ['keep', 'Оставить как есть']].map(([v, t]) =>
+      h('label', {class: 'check-radio'}, h('input', {type: 'radio', name: `left-${r.line}`, value: v, checked: pick(r) === v ? true : null,
+        onchange: () => { choice.row[r.line] = v; }}), h('span', {text: t}))));
+    const seg = h('div', {class: 'segmented check-seg', role: 'radiogroup', 'aria-label': 'Для всех строк'}, [['auto', 'Для всех: исправить автоматически'], ['keep', 'Для всех: оставить как есть']].map(([v, t]) =>
+      h('button', {type: 'button', role: 'radio', 'aria-checked': String(v === choice.all), 'data-v': v, text: t, onclick: e => {
+        choice.all = v; choice.row = {};
+        for (const b of e.currentTarget.parentNode.children) b.setAttribute('aria-checked', String(b.dataset.v === v));
+        for (const el of dialog.querySelectorAll(`input[type=radio][value="${v}"]`)) el.checked = true;
+      }})));
+    dialog.append(
+      h('header', {class: 'check-head'}, h('h2', {id: 'confirm-title', text: `Не все строки исправлены: ${fmt(rows.length)}`}),
+        h('p', {text: 'Ознакомьтесь со строками ниже и выберите, что с ними сделать при подборе.'})),
+      h('div', {class: 'check-body'},
+        h('div', {class: 'check-trust'}, seg,
+          h('p', {class: 'check-hint', text: '«Исправить автоматически» — код по наименованию позиции, наименование — типичное для кода (по справочнику закупок СПб). «Оставить как есть» — значение из файла: неверный код не участвует в поиске по коду, подбор идёт по тексту наименования.'})),
+        h('ul', {class: 'check-rows'}, rows.map(r => h('li', {class: 'check-row'},
+          h('p', {class: 'check-row-head', text: rowLabel(r)}),
+          h('p', {class: 'check-context', text: r.kind === 'code' ? `Наименование: ${r.name}` : `Код ОКПД2: ${r.code}`}),
+          h('p', {class: 'check-problem', text: r.problem}),
+          r.suggest ? h('p', {class: 'check-hint', text: `Автоматически: ${r.kind === 'code' ? r.suggest.code : `«${r.suggest.name}»`}`})
+            : h('p', {class: 'check-hint', text: 'Автоматически подобрать не удалось — строка останется как есть.'}),
+          radios(r)))),
+        truncated ? h('p', {class: 'muted', text: 'Строки сверх показанных в окне будут исправлены автоматически.'}) : null),
+      h('footer', {class: 'check-foot'},
+        h('button', {class: 'btn btn-soft', type: 'button', text: 'Назад к исправлению', onclick: () => finish(null)}),
+        h('button', {class: 'btn btn-primary', type: 'button', text: 'Подтвердить и запустить', onclick: () => finish(new Set(rows.filter(r => pick(r) === 'keep').map(r => String(r.line))))})));
+    document.body.append(dialog);
+    dialog.showModal();
   });
 }
 

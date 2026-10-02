@@ -635,3 +635,5 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 }
 .item-name, .item-code { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .item-code { align-items: flex-end; flex: none; }
+.check-confirm { width: min(700px, calc(100vw - 32px)); }
+.check-seg { flex-wrap: wrap; }

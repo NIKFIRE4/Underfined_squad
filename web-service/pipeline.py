@@ -140,7 +140,7 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
     stats = {"notices": 0, "items": 0, "lots": 0, "recommendations": 0, "verified": 0, "unverified": 0, "without_items": 0, "without_candidates": 0, "enrichment_errors": 0, "skipped_items": 0}
     preview = []
     formats = {}
-    okpd_fixes, okpd_unknown, okpd_errors, names_filled = [], 0, [], 0
+    okpd_fixes, okpd_unknown, okpd_errors, names_filled, kept_as_is = [], 0, [], 0, 0
     # выбор пользователя в окне проверки ОКПД2 и наименований (server.py, /check → /start)
     choice_path = folder / "okpd2_choice.json"
     okpd_choice = json.loads(choice_path.read_text(encoding="utf-8")) if choice_path.exists() else {}
@@ -160,13 +160,16 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                     if issue and issue["kind"] == "both":
                         okpd_errors.append(f'строка {line}, лот {row["lot_id"]}: {issue["problem"]}')
                         continue
-                    fix = okpd_check.resolve(row, okpd_choice.get("rows", {}).get(str(line)),
+                    user_row = okpd_choice.get("rows", {}).get(str(line))
+                    if user_row and user_row.get("keep") and issue:
+                        kept_as_is += 1
+                    fix = okpd_check.resolve(row, user_row,
                                              okpd_choice.get("trust", {}).get(str(line), okpd_choice.get("trust_all", "code")))
                     if fix and fix["from"] != fix["to"]:
                         okpd_fixes.append(fix)
                     if row.get("product_name_original") is not None:
                         names_filled += 1
-                    if not fix and okpd_check.unknown(row["okpd2_code"]):
+                    if not fix and not (user_row and user_row.get("keep")) and okpd_check.unknown(row["okpd2_code"]):
                         okpd_unknown += 1
                 try:
                     db.execute(f"INSERT INTO {table} VALUES (?, ?)", (row["lot_id"], json.dumps(row, ensure_ascii=False)))
@@ -203,8 +206,12 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f"Наименования: у {names_filled} {okpd_check._plural(names_filled, 'позиции', 'позиций', 'позиций')} "
                             f"наименование было некорректным — исправлено (вручную или типичным наименованием по коду ОКПД2). "
                             f"Исходное видно в позициях лота.")
+        if kept_as_is:
+            warnings.append(f"Позиции ТРУ: {kept_as_is} {okpd_check._plural(kept_as_is, 'строка оставлена', 'строки оставлены', 'строк оставлено')} "
+                            f"как в файле по вашему подтверждению — неверный код в поиске по коду не участвует, подбор по тексту.")
         stats["okpd2_fixed"] = len(okpd_fixes)
         stats["names_filled"] = names_filled
+        stats["kept_as_is"] = kept_as_is
         update(progress=43, message="Файлы проверены", stats=dict(stats), warnings=warnings)
         lot_keys = []  # (качество, смещение, длина) строк lots.part — для сортировки лотов
         with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f, (folder / "lots.part").open("wb") as lots_out:
