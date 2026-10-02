@@ -27,6 +27,6 @@ class OkpdCheckTests(unittest.TestCase):
         fix = okpd_check.fix_item(row)
         self.assertEqual((row["okpd2_code"], row["okpd2_original"]), ("10.51.52.140", "02.51.52.140"))
         text = okpd_check.summary([fix] * 5, 10, 2)
-        self.assertIn("5 из 10", text[0])
+        self.assertIn("у 5 позиций из 10", text[0])
         self.assertIn("класс «02»", text[0])
         self.assertIn("у 2 позиций", text[1])
