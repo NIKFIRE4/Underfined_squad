@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from inputs import prepare_sources
 from exports import export_lot
 from okpd_coverage import coverage
+import okpd_check
 from pipeline import run_pipeline
 from integrations import recommender, enricher, analysis
 
@@ -292,8 +293,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(recommender, "READY", False) or not hasattr(recommender, "recommend_detailed"):
                     self.reply(503, {"error": "Модель не подключена. См. INTEGRATION.md"})
                     return
+                fixes = []
+                for item in payload.get("items") or [] if isinstance(payload, dict) else []:
+                    if isinstance(item, dict) and item.get("okpd2"):
+                        row = {"okpd2_code": item["okpd2"], "product_name": item.get("name", "")}
+                        if fix := okpd_check.fix_item(row):
+                            item["okpd2"] = row["okpd2_code"]
+                            fixes.append(fix)
                 try:
                     result = recommender.recommend_detailed(payload)
+                    if fixes and isinstance(result, dict):
+                        result.setdefault("warnings", []).extend(okpd_check.summary(fixes, len(payload["items"]), 0))
                 except ValueError:
                     raise
                 except Exception:

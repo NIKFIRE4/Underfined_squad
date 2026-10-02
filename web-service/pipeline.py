@@ -9,6 +9,7 @@ from pathlib import Path
 
 from models import Candidate, Lot
 from integrations import recommender, enricher
+import okpd_check
 
 csv.field_size_limit(1_000_000)
 OUTPUT_FIELDS = ["lot_id", "subject", "rank", "supplier_name", "supplier_inn", "supplier_kpp", "score", "role", "status", "region", "is_smp", "is_new", "reasons", "sources", "enrichment_status", "is_demo"]
@@ -139,6 +140,7 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
     stats = {"notices": 0, "items": 0, "lots": 0, "recommendations": 0, "verified": 0, "unverified": 0, "without_items": 0, "without_candidates": 0, "enrichment_errors": 0, "skipped_items": 0}
     preview = []
     formats = {}
+    okpd_fixes, okpd_unknown = [], 0
     with closing(sqlite3.connect(folder / "input.sqlite")) as db, db:
         db.execute("CREATE TABLE notices (lot_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
         db.execute("CREATE TABLE items (lot_id TEXT NOT NULL, data TEXT NOT NULL)")
@@ -148,6 +150,12 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                 if kind == "items" and not row["product_name"] and not row["okpd2_code"]:
                     stats["skipped_items"] += 1
                     continue
+                if kind == "items":
+                    # «защита от дурака»: несуществующий код ОКПД2 восстанавливаем по справочнику и названию позиции
+                    if fix := okpd_check.fix_item(row):
+                        okpd_fixes.append(fix)
+                    elif okpd_check.unknown(row["okpd2_code"]):
+                        okpd_unknown += 1
                 try:
                     db.execute(f"INSERT INTO {table} VALUES (?, ?)", (row["lot_id"], json.dumps(row, ensure_ascii=False)))
                 except sqlite3.IntegrityError:
@@ -173,6 +181,8 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f'Пропущено извещений без ТРУ: {stats["without_items"]}.')
         if stats["skipped_items"]:
             warnings.append(f'Пропущено строк ТРУ без названия и кода ОКПД2: {stats["skipped_items"]}. Остальные позиции включены в подбор.')
+        warnings += okpd_check.summary(okpd_fixes, stats["items"], okpd_unknown)
+        stats["okpd2_fixed"] = len(okpd_fixes)
         update(progress=43, message="Файлы проверены", stats=dict(stats), warnings=warnings)
         lot_keys = []  # (качество, смещение, длина) строк lots.part — для сортировки лотов
         with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f, (folder / "lots.part").open("wb") as lots_out:
@@ -204,7 +214,8 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                     stats["without_candidates"] += 1
                 card = {"lot_id": lot_id, "subject": lot.notice["subject"], "start_price": lot.notice.get("start_price", ""),
                         "is_smp": lot.notice.get("is_smp", ""), "items_total": len(lot.items),
-                        "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", "")} for i in lot.items[:30]]}
+                        "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", ""),
+                                   **({"okpd2_original": i["okpd2_original"]} if i.get("okpd2_original") else {})} for i in lot.items[:30]]}
                 for group, chosen in groups.items():
                     card[group] = []
                     for rank, candidate in enumerate(chosen, 1):

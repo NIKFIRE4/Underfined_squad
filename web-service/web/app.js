@@ -395,7 +395,8 @@ function renderLotDetail() {
     const rest = lot.items_total - lot.items.length;
     children.push(h('details', {class: 'lot-items'},
       h('summary', {text: `Позиции ТРУ и коды ОКПД2 (${fmt(lot.items_total || lot.items.length)})`}),
-      h('ul', {}, lot.items.map(i => h('li', {}, h('span', {text: i.name || 'Без названия'}), i.okpd2 ? h('code', {title: 'ОКПД2', text: i.okpd2}) : null))),
+      h('ul', {}, lot.items.map(i => h('li', {}, h('span', {text: i.name || 'Без названия'}), i.okpd2 ? h('code', {title: i.okpd2_original ? `ОКПД2 исправлен: в файле ${i.okpd2_original} — такого кода нет` : 'ОКПД2', text: i.okpd2}) : null,
+        i.okpd2_original ? h('small', {class: 'okpd-fixed', text: `в файле ${i.okpd2_original}`}) : null))),
       rest > 0 ? h('p', {class: 'more', text: `Ещё ${fmt(rest)} — в выгрузке CSV.`}) : null));
   }
 
