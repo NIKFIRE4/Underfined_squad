@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${1:-data/enrichment.dump}"
-TABLES=(company_facts enrichment_runs companies pool_companies pool_codes registry_items)
+TABLES=(company_facts enrichment_runs companies pool_companies pool_codes registry_items rnp_registry)
 [ -z "${NO_RAW:-}" ] && TABLES+=(raw_responses)
 ARGS=(); for t in "${TABLES[@]}"; do ARGS+=(-t "$t"); done
 mkdir -p "$(dirname "$OUT")"
