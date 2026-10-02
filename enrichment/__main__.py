@@ -20,7 +20,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from . import discovery, fns_dumps, history, pool_activity, registries, rnp_dump, storage
 from .card import build_company
@@ -227,7 +227,8 @@ def _export_unverified(engine, out: str) -> None:
         w.writerow(cols + ["status"])
         n = 0
         for r in conn.execute(select(*[p.c[c] for c in cols]).where(p.c.pool_status == "unverified")
-                              .order_by(p.c.pool_tier, p.c.taxes_paid_2025.desc().nulls_last())):
+                              .order_by(case({"strong": 0, "active": 1, "signal": 2}, value=p.c.pool_tier, else_=3),
+                                        p.c.taxes_paid_2025.desc().nulls_last())):
             w.writerow([_csv_value(v) for v in r] + ["Непроверенный"])
             n += 1
     log.info("непроверенные: %s, %d строк", out, n)
