@@ -118,11 +118,34 @@ function historyUpsert(id, patch) {
   if (i >= 0) list.splice(i, 1);
   historySave([entry, ...list]);
 }
+// Принятые решения по позициям ТРУ: что нашла проверка (okpd2_check) и что выбрал пользователь (okpd2_choice)
+function checkDecisions(job) {
+  const c = job.okpd2_check;
+  if (!c || !(c.code || c.name || c.conflict)) return c ? 'Проверка ТРУ: ошибок нет' : '';
+  const choice = job.okpd2_choice || {mode: 'auto', rows: {}, trust: {}, trust_all: 'code'};
+  const found = [c.code ? `коды ОКПД2 — ${fmt(c.code)}` : '', c.name ? `наименования — ${fmt(c.name)}` : ''].filter(Boolean).join(', ');
+  const parts = [];
+  if (found) {
+    const rows = Object.values(choice.rows || {});
+    const keep = rows.filter(r => r.keep).length, manual = rows.length - keep;
+    const auto = Math.max(c.code + c.name - manual - keep, 0);
+    parts.push(`ошибки: ${found} → ` + [manual ? `вручную ${fmt(manual)}` : '', auto ? `автоматически ${fmt(auto)}` : '',
+      keep ? `как есть ${fmt(keep)}` : ''].filter(Boolean).join(', '));
+  }
+  if (c.conflict) {
+    const other = Object.values(choice.trust || {}).filter(t => t !== choice.trust_all).length;
+    parts.push(`код не соответствовал наименованию — ${fmt(c.conflict)} → ориентир на ${choice.trust_all === 'name' ? 'наименование' : 'код ОКПД2'}` +
+      (other ? `, у ${fmt(other)} — наоборот` : ''));
+  }
+  return 'Проверка ТРУ — ' + parts.join('; ');
+}
+
 function historyFromJob(job) {
   const stats = job.stats || {};
   const files = job.detected ? [job.detected.notices, job.detected.items].filter(Boolean) : Object.values(job.files || {}).map(f => f.name).filter(Boolean);
   historyUpsert(job.id, {status: job.status, files, lots: stats.lots, verified: stats.verified, unverified: stats.unverified,
-                         at: Math.round((job.created_at || Date.now() / 1000) * 1000), message: job.status === 'failed' ? job.message : undefined});
+                         at: Math.round((job.created_at || Date.now() / 1000) * 1000), message: job.status === 'failed' ? job.message : undefined,
+                         decisions: checkDecisions(job) || undefined});
 }
 const maxBytes = () => state.health?.max_file_bytes || 512 * 1024 * 1024;
 
@@ -1282,6 +1305,7 @@ function openHistory() {
           h('span', {class: 'history-top'}, h('strong', {text: when}), h('span', {class: 'chip', 'data-tone': tone, text: label})),
           h('span', {class: 'history-files', text: (e.files || []).join(', ') || 'Файлы без имени'}),
           counts ? h('small', {text: counts}) : null,
+          e.decisions ? h('small', {class: 'history-decisions', text: e.decisions}) : null,
           e.message ? h('small', {class: 'history-error', text: e.message.slice(0, 160)}) : null),
         h('button', {class: 'icon-btn history-del', type: 'button', 'aria-label': 'Убрать из истории', title: 'Убрать из истории',
           onclick: () => { historySave(historyLoad().filter(x => x.id !== e.id)); render(); }}, icon('x')));

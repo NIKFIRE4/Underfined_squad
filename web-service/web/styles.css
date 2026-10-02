@@ -653,3 +653,4 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .history-files { color: var(--ink); overflow-wrap: anywhere; }
 .history-error { color: var(--danger); }
 .history-del { margin-top: 10px; flex: none; }
+.history-decisions { padding: 6px 10px; border-radius: var(--radius-sm); background: var(--warn-bg); color: var(--ink-2); }
