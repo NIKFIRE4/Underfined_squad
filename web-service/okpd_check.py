@@ -203,7 +203,7 @@ def code_state(code) -> str:
     return "ok" if ref is None or code in ref[0] else "unknown"
 
 
-def analyze_row(row: dict) -> dict | None:
+def analyze_row(row: dict, subject: str = "") -> dict | None:
     """Проблема строки ТРУ или None. kind: both (не принимаем), code, name (одно поле), conflict (противоречие)."""
     name, raw = row.get("product_name", ""), row.get("okpd2_code", "")
     code, state, good_name = normalize(raw), code_state(raw), name_ok(name)
@@ -224,14 +224,19 @@ def analyze_row(row: dict) -> dict | None:
         fixed, why = check(code, name) if state == "unknown" else (code, None)
         if state == "unknown" and why is None and (not guess(name) or group_known(code)):
             return None  # редкий, но правдоподобный код (его группа есть в справочнике) — не трогаем
-        options = ([{"code": fixed, "title": title(fixed), "why": why}] if why else []) + \
-                  [{**g, "why": "по наименованию позиции"} for g in guess(name) if g["code"] != fixed]
+        by_name = [{**g, "why": "по наименованию позиции"} for g in guess(name, 2) if g["code"] != fixed]
+        # предмет закупки — контекст: общее или ошибочное наименование позиции он уточняет
+        by_subject = [{**g, "why": "по предмету закупки"} for g in guess(subject, 2)] if subject else []
+        options = ([{"code": fixed, "title": title(fixed), "why": why}] if why else []) + by_name
+        options += [g for g in by_subject if g["code"] not in {o["code"] for o in options}]
         problem = {"empty": "код не указан", "format": f"«{raw}» — не код ОКПД2 (нужно XX.XX.XX.XXX)",
                    "unknown": f"кода {code} нет в классификаторе"}[state]
-        return {"kind": "code", "code": code, "name": name, "problem": problem,
-                "suggest": {"code": options[0]["code"]} if options else None, "options": options[:3],
-                "hint": "Выберите код из подсказок или впишите свой в формате XX.XX.XX.XXX." if options else
-                        "Подобрать код не удалось — без кода подбор пойдёт по тексту наименования."}
+        mismatch = bool(by_name and by_subject and not why and by_name[0]["code"][:2] != by_subject[0]["code"][:2])
+        hint = ("Наименование позиции и предмет закупки указывают на разные виды работ — выберите код вручную."
+                if mismatch else "Выберите код из подсказок или впишите свой в формате XX.XX.XX.XXX." if options else
+                "Подобрать код не удалось — без кода подбор пойдёт по тексту наименования.")
+        return {"kind": "code", "code": code, "name": name, "subject": subject, "problem": problem, "mismatch": mismatch,
+                "suggest": {"code": options[0]["code"]} if options else None, "options": options[:4], "hint": hint}
     if (c := conflict(code, name)) is not None:
         return {"kind": "conflict", "code": code, "name": name,
                 "problem": f"код {code} — «{title(code)}», а наименование ближе к коду {c['code']} — «{c['title']}»",
@@ -240,12 +245,12 @@ def analyze_row(row: dict) -> dict | None:
     return None
 
 
-def analyze(rows) -> dict:
-    """rows — [(номер строки файла, lot_id, строка)] → сводка проверки для окна выбора сценария."""
+def analyze(rows, subjects: dict | None = None) -> dict:
+    """rows — [(номер строки файла, lot_id, строка)], subjects — lot_id → предмет закупки → сводка для окна выбора."""
     out = {"total": 0, "counts": {"both": 0, "code": 0, "name": 0, "conflict": 0}, "rows": [], "truncated": False}
     for line, lot_id, row in rows:
         out["total"] += 1
-        issue = analyze_row(row)
+        issue = analyze_row(row, (subjects or {}).get(lot_id, ""))
         if issue is None:
             continue
         out["counts"][issue["kind"]] += 1

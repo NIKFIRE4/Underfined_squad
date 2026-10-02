@@ -350,12 +350,14 @@ function checkDialog(check) {
       const field = r.kind === 'code' ? 'okpd2_code' : 'product_name';
       const input = h('input', {class: 'check-input', type: 'text', value: valueOf(r), 'aria-label': `${rowLabel(r)}: ${r.kind === 'code' ? 'код ОКПД2' : 'наименование'}`,
         placeholder: r.kind === 'code' ? 'Код в формате XX.XX.XX.XXX' : 'Наименование товара или услуги', oninput: e => { state.edits[r.line] = {[field]: e.target.value}; refresh(); }});
-      const options = r.kind === 'code' ? (r.options || []).map(o => ({value: o.code, text: `${o.code} — ${o.title || 'код из справочника'}`, why: o.why}))
+      const options = r.kind === 'code' ? (r.options || []).map(o => ({value: o.code, text: `${o.code} — ${o.title || 'код из справочника'} (${o.why})`, why: o.why}))
         : r.suggest?.name ? [{value: r.suggest.name, text: r.suggest.name, why: 'типичное наименование для этого кода'}] : [];
       return h('li', {class: 'check-row', 'data-line': String(r.line)},
         h('p', {class: 'check-row-head'}, rowLabel(r), h('span', {class: 'check-mark', 'aria-hidden': 'true'})),
         h('p', {class: 'check-context', text: r.kind === 'code' ? `Наименование: ${r.name}` : `Код ОКПД2: ${r.code}`}),
+        r.subject ? h('p', {class: 'check-subject', text: `Предмет закупки: ${r.subject}`}) : null,
         h('p', {class: 'check-problem', text: r.problem}),
+        r.mismatch ? h('p', {class: 'check-mismatch', text: 'Наименование позиции и предмет закупки указывают на разные виды работ — сверьте с документацией.'}) : null,
         h('label', {class: 'check-field'}, h('span', {text: r.kind === 'code' ? 'Код ОКПД2' : 'Наименование'}), input),
         options.length ? h('div', {class: 'check-suggest'}, h('span', {class: 'muted', text: 'Подсказка:'}),
           options.map(o => h('button', {class: 'check-chip', type: 'button', title: o.why || '', text: o.text,
@@ -450,7 +452,9 @@ function confirmUnresolved(rows, hidden = 0) {
         h('ul', {class: 'check-rows'}, rows.map(r => h('li', {class: 'check-row'},
           h('p', {class: 'check-row-head', text: rowLabel(r)}),
           h('p', {class: 'check-context', text: r.kind === 'code' ? `Наименование: ${r.name}` : `Код ОКПД2: ${r.code}`}),
+          r.subject ? h('p', {class: 'check-subject', text: `Предмет закупки: ${r.subject}`}) : null,
           h('p', {class: 'check-problem', text: r.problem}),
+          r.mismatch ? h('p', {class: 'check-mismatch', text: 'Наименование позиции и предмет закупки указывают на разные виды работ — автоисправление возьмёт код по наименованию позиции.'}) : null,
           r.suggest ? h('p', {class: 'check-hint', text: `Автоматически: ${r.kind === 'code' ? r.suggest.code : `«${r.suggest.name}»`}`})
             : h('p', {class: 'check-hint', text: 'Автоматически подобрать не удалось — строка останется как есть.'}),
           radios(r)))),
@@ -637,6 +641,7 @@ function renderLotDetail() {
           title: 'Все поставщики этого лота: проверенные и непроверенные',
         })))),
     h('h2', {text: lot.subject}),
+    lot.subject_original ? h('p', {class: 'check-mismatch', text: `Предмет закупки в файле: «${lot.subject_original}» — не совпадает с наименованием процедуры и позициями ТРУ; подбор шёл по наименованию процедуры.`}) : null,
     meta.length ? h('dl', {class: 'lot-meta'}, meta.map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v})))) : null,
   ];
 
@@ -923,7 +928,9 @@ async function loadOkpdCoverage(c, lot, box) {
         h('span', {class: 'okpd-code'}, item.code, item.original ? h('small', {class: 'okpd-fixed', title: 'Код исправлен при загрузке: в файле такого кода нет', text: ` в файле ${item.original}`}) : null),
         h('span', {text: okpdLabel(item)})))),
       h('p', {class: 'okpd-note', text: !data.total ? 'В позициях лота коды ОКПД2 не указаны.' : data.available
-        ? 'Сверка с историей побед и участий поставщика в закупках СПб (выгрузка организаторов 2024–2025). Частичное совпадение — общий вид, подгруппа, группа или класс ОКПД2. Отсутствие кода не означает, что поставщик не может поставить товар.'
+        ? (data.basis === 'pool'
+          ? 'Истории закупок в СПб нет — сверка с группами ОКПД2 компании из реестров (основной ОКВЭД, продукция, госконтракты). Совпадение на уровне группы (XX.XX) — точнее реестры не размечены.'
+          : 'Сверка с историей побед и участий поставщика в закупках СПб (выгрузка организаторов 2024–2025). Частичное совпадение — общий вид, подгруппа, группа или класс ОКПД2. Отсутствие кода не означает, что поставщик не может поставить товар.')
         : 'В модели нет истории кодов этого поставщика — подтвердить наличие или отсутствие нельзя.'}));
   } catch {
     if (!box.isConnected) return;

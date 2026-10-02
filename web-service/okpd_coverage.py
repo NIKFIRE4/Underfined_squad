@@ -54,4 +54,19 @@ def coverage(folder, lot_id, inn, mode):
         history = snap.SK[snap.SK.sid == sid] if sid >= 0 else snap.SK.iloc[:0]
         if len(history):
             supplier_codes = set(rec.vocab.okpd_key[history.kid.to_numpy()])
-    return compare_codes(items, supplier_codes)
+    if supplier_codes is None and (groups := pool_groups(inn)):
+        # новая компания («Непроверенные»): истории закупок нет — сверяем с группами ОКПД2 из реестров (ОКВЭД, продукция)
+        return {**compare_codes(items, groups), "basis": "pool"}
+    return {**compare_codes(items, supplier_codes), "basis": "history"}
+
+
+def pool_groups(inn):
+    """Группы ОКПД2 (XX.XX) компании из пула новых: unverified_pool_groups в базе стенда. Нет базы — None."""
+    try:
+        import psycopg2
+        from integrations.new_pool import db_url
+        with closing(psycopg2.connect(db_url(), connect_timeout=3)) as conn, conn.cursor() as cur:
+            cur.execute("select okpd2_group from unverified_pool_groups where inn = %s", (inn,))
+            return {r[0] for r in cur.fetchall()} or None
+    except Exception:
+        return None

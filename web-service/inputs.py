@@ -40,7 +40,10 @@ def csv_headers(path: Path):
         first = f.readline()
         delimiter = ";" if first.count(";") >= first.count(",") else ","
         f.seek(0)
-        return [h for cell in next(csv.reader(f, delimiter=delimiter), []) for h in cell.split(delimiter)]
+        headers = [h for cell in next(csv.reader(f, delimiter=delimiter), []) for h in cell.split(delimiter)]
+        while headers and not headers[-1].strip():
+            headers.pop()  # разделитель в конце строки заголовка
+        return headers
 
 
 def _col(ref):

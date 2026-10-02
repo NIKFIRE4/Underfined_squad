@@ -75,6 +75,11 @@ def _load():
     groups["rank_key"] = (ev.str.contains("контракт|лиценз|реестр|ГИСП|Минпромторг|РУ ") | same_group).astype("int8")
     groups = (groups.sort_values(["okpd2_group", "rank_key", "priority"], ascending=[True, False, False])
                     .groupby("okpd2_group", sort=False).head(PER_GROUP).reset_index(drop=True))
+    # специализированный застройщик (214-ФЗ) вправе вести только свой проект строительства — не подрядчик госзакупок
+    spv = companies.name.fillna("").str.contains("СПЕЦИАЛИЗИРОВАННЫЙ ЗАСТРОЙЩИК", case=False) | \
+          companies.name_short.fillna("").str.contains(r"СПЕЦИАЛИЗИРОВАННЫЙ ЗАСТРОЙЩИК|^ООО\s+\"?СЗ\b", case=False, regex=True)
+    companies = companies[~spv]
+    groups = groups[groups.inn.isin(set(companies.inn))]
     companies = companies[companies.inn.isin(set(groups.inn))].set_index("inn")
     return groups, companies
 

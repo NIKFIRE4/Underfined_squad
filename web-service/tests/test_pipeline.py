@@ -62,6 +62,14 @@ class PipelineTests(unittest.TestCase):
         self.inputs('"lot_id";"reqnum;procedure_name";"subject"\n0001;;Поставка;Поставка бумаги\n')
         self.assertEqual('Поставка бумаги', self.run_job()['preview'][0]['subject'])
 
+    def test_excel_saved_files(self):
+        # архив 5 предзащиты: «;» в конце заголовка, пустые строки «;;;», дата ДД.ММ.ГГГГ, ИСТИНА/ЛОЖЬ, склеенный заголовок
+        self.inputs('"lot_id";"reqnum;procedure_name";subject;publish_date;is_smp;\n0001;;Поставка;Поставка бумаги;23.01.2026;ИСТИНА\n;;;;;\n;;;;;\n',
+                    'lot_id;product_name;okpd2_code\n0001;Бумага;17.12\n;;\n;;\n')
+        job = self.run_job()
+        self.assertEqual(job['preview'][0]['subject'], 'Поставка бумаги')
+        self.assertTrue(any('сохранён через Excel' in w and 'ИСТИНА' in w for w in job['warnings']), job['warnings'])
+
     def test_missing_column(self):
         self.inputs(items='lot_id;product_name\n0001;Шприц\n')
         with self.assertRaisesRegex(ValueError, 'okpd2_code'):

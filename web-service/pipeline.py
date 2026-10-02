@@ -1,4 +1,5 @@
 import csv
+import re
 import io
 import json
 import math
@@ -18,7 +19,71 @@ OUTPUT_FIELDS = ["lot_id", "subject", "rank", "supplier_name", "supplier_inn", "
 def split_headers(cells, delimiter):
     """Заголовки в нижнем регистре. Ячейка в кавычках с разделителем внутри («"reqnum;procedure_name"»,
     так пришло в файлах предзащиты) — это склеенные столбцы: значения в строках идут раздельно."""
-    return [h.strip().lower() for cell in cells for h in cell.split(delimiter)]
+    headers = [h.strip().lower() for cell in cells for h in cell.split(delimiter)]
+    while headers and not headers[-1]:
+        headers.pop()  # «…;is_eshop_or_aisgz;» — разделитель в конце строки даёт пустой столбец
+    return headers
+
+
+def iso_date(value: str) -> str:
+    """«23.01.2026» и «23.01.2026 10:00» → «2026-01-23»; модель ждёт ГГГГ-ММ-ДД (срез истории по дате лота)."""
+    m = re.fullmatch(r"(\d{1,2})[./](\d{1,2})[./](\d{4})(?:[ T].*)?", value.strip())
+    return f"{m[3]}-{int(m[2]):02d}-{int(m[1]):02d}" if m else value
+
+
+# Следы сохранения CSV через Excel: даты ДД.ММ.ГГГГ, ИСТИНА/ЛОЖЬ, потерянный ведущий ноль ИНН/КПП,
+# длинные номера в экспоненциальной записи (7,81E+09 — цифры уже потеряны, восстановить нельзя).
+EXCEL_BOOL = {"истина": "true", "ложь": "false", "true": "true", "false": "false", "да": "true", "нет": "false", "1": "true", "0": "false"}
+EXP = re.compile(r"\d+(?:[.,]\d+)?[eE]\+?\d+")
+
+
+def inn_ok(inn: str) -> bool:
+    """Контрольная сумма ИНН юрлица (10 цифр)."""
+    w = (2, 4, 10, 3, 5, 9, 4, 6, 8)
+    return len(inn) == 10 and inn.isdigit() and sum(int(d) * k for d, k in zip(inn, w)) % 11 % 10 == int(inn[9])
+
+
+def excel_fix(row: dict, kind: str) -> set[str]:
+    """Исправляет строку на месте; возвращает, что было исправлено или найдено (для предупреждения)."""
+    found = set()
+    for field in ("lot_id", "customer_inn", "customer_kpp", "reqnum", "procedure_id"):
+        if EXP.fullmatch(str(row.get(field) or "").strip()):
+            found.add(f"exp:{field}")
+    if kind != "notices":
+        return found
+    if (v := str(row.get("is_smp") or "").strip().lower()) and EXCEL_BOOL.get(v, v) != v:
+        row["is_smp"] = EXCEL_BOOL[v]
+        found.add("bool")
+    for field, size in (("customer_inn", 10), ("customer_kpp", 9)):
+        v = str(row.get(field) or "").strip()
+        if v.isdigit() and len(v) == size - 1 and (field != "customer_inn" or inn_ok("0" + v)):
+            row[field] = "0" + v  # Excel убрал ведущий ноль (ИНН/КПП регионов 01–09)
+            found.add("zero")
+    return found
+
+
+EXCEL_NOTES = {"bool": "логические значения ИСТИНА/ЛОЖЬ приведены к true/false",
+               "zero": "восстановлен ведущий ноль в ИНН/КПП заказчика",
+               "date": "даты ДД.ММ.ГГГГ приведены к ГГГГ-ММ-ДД"}
+
+
+# служебные слова предмета закупки — не различают, о чём закупка
+GENERIC = {"работ", "услуг", "выпол", "оказа", "поста", "прове", "товар", "нужда", "нужды", "закуп", "компл", "объек", "госуд", "учреж"}
+
+
+def pick_subject(lot) -> bool:
+    """subject и procedure_name расходятся (так было в файле предзащиты: «ТО противодымной защиты» против
+    «капитального ремонта») — для подбора берём то, что совпадает по словам с позициями ТРУ лота."""
+    subject, name = lot.notice.get("subject", ""), lot.notice.get("procedure_name", "")
+    words = lambda t: okpd_check.stems(t) - GENERIC  # noqa: E731
+    a, b = words(subject), words(name)
+    if not a or not b or len(a & b) / min(len(a), len(b)) > 0.5:
+        return False
+    items = set().union(*(words(i.get("product_name", "")) for i in lot.items)) if lot.items else set()
+    if len(b & items) <= len(a & items):
+        return False
+    lot.notice["subject_original"], lot.notice["subject"] = subject, name
+    return True
 
 
 def read_csv(path: Path, kind: str):
@@ -51,12 +116,16 @@ def read_csv(path: Path, kind: str):
         for values in reader:
             if not values or not any(v.strip() for v in values):
                 continue
+            while len(values) > len(headers) and not values[-1].strip():
+                values = values[:-1]  # лишние пустые значения в конце строки (разделитель в конце)
             if len(values) != len(headers):
                 raise ValueError(f"Строка {reader.line_num}: число значений не совпадает с числом столбцов")
             row = dict(zip(headers, (v.strip() for v in values)))
             if not row["lot_id"]:
                 raise ValueError(f"Строка {reader.line_num}: пустой lot_id")
             if kind == "notices":
+                if row.get("publish_date") and (iso := iso_date(row["publish_date"])) != row["publish_date"]:
+                    row["publish_date"], row["_excel_date"] = iso, True
                 row["subject"] = row.get("subject") or row.get("procedure_name", "")
                 if not row["subject"]:
                     raise ValueError(f"Строка {reader.line_num}: пустой предмет закупки")
@@ -141,6 +210,8 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
     preview = []
     formats = {}
     okpd_fixes, okpd_unknown, okpd_errors, names_filled, kept_as_is = [], 0, [], 0, 0
+    excel_found: set[str] = set()
+    subject_switched: list[str] = []
     # выбор пользователя в окне проверки ОКПД2 и наименований (server.py, /check → /start)
     choice_path = folder / "okpd2_choice.json"
     okpd_choice = json.loads(choice_path.read_text(encoding="utf-8")) if choice_path.exists() else {}
@@ -150,6 +221,7 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
         for kind, table, stat, base in [("notices", "notices", "notices", 5), ("items", "items", "items", 20)]:
             update(stage="validation", progress=base, message=f'Проверяем {"извещения" if kind == "notices" else "позиции ТРУ"}…')
             for row, line, encoding, delimiter in read_csv(folder / f"{kind}.csv", kind):
+                excel_found |= excel_fix(row, kind) | ({"date"} if row.pop("_excel_date", False) else set())
                 if kind == "items" and not row["product_name"] and not row["okpd2_code"]:
                     stats["skipped_items"] += 1
                     continue
@@ -201,6 +273,11 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f'Пропущено извещений без ТРУ: {stats["without_items"]}.')
         if stats["skipped_items"]:
             warnings.append(f'Пропущено строк ТРУ без названия и кода ОКПД2: {stats["skipped_items"]}. Остальные позиции включены в подбор.')
+        if notes := [EXCEL_NOTES[k] for k in ("date", "bool", "zero") if k in excel_found]:
+            warnings.append("Файл, похоже, сохранён через Excel — исправлено: " + "; ".join(notes) + ".")
+        if exp := sorted(k.split(":")[1] for k in excel_found if k.startswith("exp:")):
+            warnings.append(f"Excel записал длинные номера в экспоненциальном виде (например, 7,81E+09) в столбцах: {', '.join(exp)}. "
+                            "Цифры уже потеряны — сохраните столбцы как текст и загрузите файл заново.")
         warnings += okpd_check.summary(okpd_fixes, stats["items"], okpd_unknown)
         if names_filled:
             warnings.append(f"Наименования: у {names_filled} {okpd_check._plural(names_filled, 'позиции', 'позиций', 'позиций')} "
@@ -220,6 +297,8 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             cursor = db.execute("SELECT n.lot_id,n.data FROM notices n WHERE EXISTS (SELECT 1 FROM items i WHERE i.lot_id=n.lot_id) ORDER BY n.rowid")
             for index, (lot_id, data) in enumerate(cursor, 1):
                 lot = Lot(lot_id, json.loads(data), [json.loads(r[0]) for r in db.execute("SELECT data FROM items WHERE lot_id=?", (lot_id,))])
+                if pick_subject(lot):
+                    subject_switched.append(lot_id)
                 if stats["lots"] <= 500 or index == 1 or index % 50 == 0:  # мелкие наборы — прогресс по каждому лоту
                     update(stage="recommendation", progress=45+int(49*(index-1)/stats["lots"]), message=f'Подбираем поставщиков: лот {index} из {stats["lots"]}', stats=dict(stats))
                 candidates = demo_recommend(lot, top_k) if mode == "demo" else recommender.recommend(lot, top_k)
@@ -242,6 +321,7 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                 if not groups["verified"] and not groups["unverified"]:
                     stats["without_candidates"] += 1
                 card = {"lot_id": lot_id, "subject": lot.notice["subject"], "start_price": lot.notice.get("start_price", ""),
+                        **({"subject_original": lot.notice["subject_original"]} if lot.notice.get("subject_original") else {}),
                         "is_smp": lot.notice.get("is_smp", ""), "items_total": len(lot.items),
                         "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", ""),
                                    **({"okpd2_original": i["okpd2_original"], "okpd2_fix_reason": i.get("okpd2_fix_reason", "")}
@@ -274,6 +354,11 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f'Не удалось обогатить лотов: {stats["enrichment_errors"]}. Данные источников не подтверждены.')
         if stats["without_candidates"]:
             warnings.append(f'Для {stats["without_candidates"]} лотов кандидаты не найдены.')
+        if subject_switched:
+            warnings.append(f"Лоты {', '.join(subject_switched[:5])}{' и др.' if len(subject_switched) > 5 else ''}: предмет закупки (subject) "
+                            f"не совпадает с наименованием процедуры (procedure_name) — для подбора взято наименование процедуры, "
+                            f"оно совпадает с позициями ТРУ. Исходный предмет показан в лоте.")
+            update(warnings=warnings)
         update(stage="export", progress=97, message="Сохраняем файл «Поставщики»…")
         (folder / "result.part").replace(folder / "suppliers.csv")
         sort_lots(folder / "lots.part", folder / "lots.jsonl", lot_keys)
