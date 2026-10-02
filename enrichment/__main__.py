@@ -22,7 +22,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
-from . import discovery, fns_dumps, history, registries, rnp_dump, storage
+from . import discovery, fns_dumps, history, pool_activity, registries, rnp_dump, storage
 from .card import build_company
 from .card import links as card_links
 from .http import Http
@@ -209,6 +209,30 @@ async def cmd_rnp_dump(args) -> None:
     rebuild_all(engine, targets)
 
 
+def cmd_pool_activity(args) -> None:
+    engine = _engine(args.db)
+    stats = pool_activity.compute(engine, set(supplier_inns(args.suppliers)))
+    log.info("пул: %s", stats)
+    if args.out:
+        _export_unverified(engine, args.out)
+
+
+def _export_unverified(engine, out: str) -> None:
+    p = storage.pool_companies
+    cols = ["inn", "kind", "ogrn", "name_full", "name_short", "region_code", "locality", "smp_category", "smp_since",
+            "employees", "employees_2025", "taxes_paid_2025", "okved_main", "okved_main_name", "okved_extra",
+            "products", "licenses_count", "pool_tier", "pool_reason", "as_of", "source"]
+    with engine.connect() as conn, open(out, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(cols + ["status"])
+        n = 0
+        for r in conn.execute(select(*[p.c[c] for c in cols]).where(p.c.pool_status == "unverified")
+                              .order_by(p.c.pool_tier, p.c.taxes_paid_2025.desc().nulls_last())):
+            w.writerow([_csv_value(v) for v in r] + ["Непроверенный"])
+            n += 1
+    log.info("непроверенные: %s, %d строк", out, n)
+
+
 def cmd_history_load(args) -> None:
     engine = _engine(args.db)
     results = history.load(suppliers=args.suppliers)
@@ -360,6 +384,9 @@ def main() -> None:
     rl.add_argument("--software", help=f"по умолчанию {registries.SOFTWARE_GLOB}")
     rd = sub.add_parser("rnp-dump", help="РНП целиком (~40 мин) вместо запроса по каждому ИНН (~11 ч)")
     rd.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    pa = sub.add_parser("pool-activity", help="расширить базу: активные МСП СПб/ЛО без истории → «непроверенные»")
+    pa.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    pa.add_argument("--out", default="data/unverified_suppliers.csv", help="CSV с непроверенными ('' — не писать)")
     hl = sub.add_parser("history-load", help="признаки из истории закупок (роль «дистрибьютор»)")
     hl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     dc = sub.add_parser("discover", help="новые компании по ОКПД2 лота (ФТ-06)")
@@ -399,6 +426,8 @@ def main() -> None:
         cmd_registries_load(args)
     elif args.cmd == "rnp-dump":
         asyncio.run(cmd_rnp_dump(args))
+    elif args.cmd == "pool-activity":
+        cmd_pool_activity(args)
     elif args.cmd == "history-load":
         cmd_history_load(args)
     elif args.cmd == "discover":

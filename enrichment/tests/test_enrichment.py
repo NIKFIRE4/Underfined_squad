@@ -254,6 +254,14 @@ def test_find_new_companies(db_url):
         {"inn": "7802000002", "code": "32.50", "kind": "okved"},
         {"inn": "7803000003", "code": "32.50", "kind": "okved_main"},
     ])
+    storage.update_pool_activity(engine, [
+        {"inn": "7802000002", "employees_2025": 0, "taxes_paid_2025": 0, "pool_status": "excluded",
+         "pool_reason": "нет налогов и сотрудников за 2025 г.", "pool_tier": None}])
+    assert "7802000002" not in {c.inn for c in discovery.find_new_companies(engine, ["32.50.13.190"],
+                                                                             regions={"78"})}
+    storage.update_pool_activity(engine, [
+        {"inn": "7802000002", "employees_2025": 3, "taxes_paid_2025": 1e5, "pool_status": "unverified",
+         "pool_reason": "сотрудников: 3", "pool_tier": "active"}])
     found = discovery.find_new_companies(engine, ["32.50.13.190"], regions={"78", "47"},
                                          exclude={"7803000003"})
     by_inn = {c.inn: c for c in found}

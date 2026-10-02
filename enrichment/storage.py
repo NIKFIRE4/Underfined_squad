@@ -118,6 +118,12 @@ pool_companies = Table(
     Column("products", JSON),  # ОКПД2 производимой продукции из реестра МСП
     Column("licenses_count", Integer),
     Column("as_of", String(10)),
+    # активность и статус для расширения базы поставщиков (pool-activity)
+    Column("employees_2025", Float),
+    Column("taxes_paid_2025", Float),
+    Column("pool_status", Text, index=True),   # unverified | excluded | supplier
+    Column("pool_reason", Text),
+    Column("pool_tier", Text),                 # strong (≥5 сотрудников) | active | signal (ИП с лицензией/продукцией)
     Column("source", String(32), nullable=False),
     Column("fetched_at", DateTime(timezone=True), nullable=False),
 )
@@ -321,3 +327,14 @@ def rnp_fetched_at(engine: Engine):
     if ts is not None and ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts
+
+
+def update_pool_activity(engine: Engine, rows: list[dict], chunk: int = 5000) -> None:
+    """rows: [{inn, employees_2025, taxes_paid_2025, pool_status, pool_reason, pool_tier}]"""
+    from sqlalchemy import bindparam, update
+    stmt = (update(pool_companies).where(pool_companies.c.inn == bindparam("b_inn"))
+            .values({k: bindparam(k) for k in ("employees_2025", "taxes_paid_2025", "pool_status",
+                                               "pool_reason", "pool_tier")}))
+    for i in range(0, len(rows), chunk):
+        with engine.begin() as conn:
+            conn.execute(stmt, [r | {"b_inn": r["inn"]} for r in rows[i : i + chunk]])
