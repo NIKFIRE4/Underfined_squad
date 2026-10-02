@@ -637,3 +637,20 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .item-code { align-items: flex-end; flex: none; }
 .check-confirm { width: min(700px, calc(100vw - 32px)); }
 .check-seg { flex-wrap: wrap; }
+
+/* История подборов в этом браузере */
+.history-btn { margin-left: auto; gap: 8px; }
+.history-btn .count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--blue); color: #fff; font-size: 12px; display: inline-grid; place-items: center; }
+.history-dialog { width: min(640px, calc(100vw - 32px)); }
+.history-list { display: flex; flex-direction: column; gap: 8px; }
+.history-item { display: flex; align-items: flex-start; gap: 8px; }
+.history-open { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 14px; border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer; transition: border-color .15s var(--ease), background .15s var(--ease); }
+.history-open:hover:not(:disabled) { border-color: var(--blue-200); background: var(--blue-50); }
+.history-open:disabled { cursor: default; opacity: .6; }
+.history-open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.history-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.history-top strong { font-size: 14.5px; color: var(--ink); }
+.history-files { color: var(--ink); overflow-wrap: anywhere; }
+.history-error { color: var(--danger); }
+.history-del { margin-top: 10px; flex: none; }
+.history-decisions { padding: 6px 10px; border-radius: var(--radius-sm); background: var(--warn-bg); color: var(--ink-2); }
