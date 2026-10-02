@@ -73,7 +73,7 @@ class PipelineTests(unittest.TestCase):
             self.run_job()
 
     def test_unknown_lot(self):
-        self.inputs(items='lot_id;product_name;okpd2_code\nunknown;A;32\n')
+        self.inputs(items='lot_id;product_name;okpd2_code\nunknown;Бумага;17.12\n')
         with self.assertRaisesRegex(ValueError, 'отсутствует'):
             self.run_job()
 

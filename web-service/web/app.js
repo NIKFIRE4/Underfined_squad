@@ -207,7 +207,21 @@ async function startJob() {
       });
       done += entry.file.size;
     }
-    await api(`/api/jobs/${job.id}/start`, {method: 'POST'});
+    // проверка позиций ТРУ до подбора: код ОКПД2 и наименование (окно выбора сценария при ошибках)
+    setProgress(20, 'Проверяем коды ОКПД2 и наименования…', 'check', fmtSize(total));
+    const check = await api(`/api/jobs/${job.id}/check`, {method: 'POST', signal: AbortSignal.timeout(600000)});
+    let body = null;
+    if (Object.values(check.counts).some(Boolean)) {
+      const choice = await checkDialog(check);
+      if (!choice) {
+        failUpload(check.counts.both
+          ? `Файл не принят: в ${fmt(check.counts.both)} ${plural(check.counts.both, 'строке', 'строках', 'строках')} ТРУ некорректны и код ОКПД2, и наименование. Исправьте хотя бы одно поле в каждой такой строке и загрузите файл снова.`
+          : 'Подбор не запущен: выберите, как исправить позиции ТРУ, или загрузите исправленный файл.', !check.counts.both);
+        return;
+      }
+      body = JSON.stringify({okpd2: choice});
+    }
+    await api(`/api/jobs/${job.id}/start`, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body} : {method: 'POST'});
     remember(job.id);
     setProgress(20, 'Ставим в очередь…', 'check', fmtSize(total));
     await poll();
@@ -216,13 +230,197 @@ async function startJob() {
   }
 }
 
-function failUpload(message) {
+/* ---------- Проверка позиций ТРУ: код ОКПД2 и наименование ---------- */
+// Сервер (/check, web-service/okpd_check.py) сверяет строки со справочником кодов закупок СПб.
+// Одно поле некорректно — пользователь выбирает: исправить самому (с подсказками) или автоматически.
+// Код противоречит наименованию — выбор, на что ориентироваться. Оба поля некорректны — файл не принимается.
+const CODE_RE = /^\d{2}(\.\d{1,2}(\.\d{1,2}(\.\d{1,3})?)?)?$/;
+const normCode = v => String(v || '').replace(/\s+/g, '').replace(/,/g, '.').replace(/^\.+|\.+$/g, '');
+const nameValid = v => (String(v).toLowerCase().match(/[а-яёa-z]/g) || []).length >= 3 && /[а-яёa-z]{3,}/i.test(String(v));
+const rowLabel = r => `Строка ${r.line} · лот ${r.lot_id}`;
+
+function checkDialog(check) {
+  return new Promise(resolve => {
+    const c = check.counts;
+    const dialog = h('dialog', {class: 'check-dialog', 'aria-labelledby': 'check-title'});
+    const finish = value => { dialog.close(); dialog.remove(); resolve(value); };
+    dialog.addEventListener('cancel', e => { e.preventDefault(); finish(null); });
+    const parts = [
+      c.both ? `${fmt(c.both)} — некорректны и код, и наименование` : '',
+      c.code ? `${fmt(c.code)} — некорректный код ОКПД2` : '',
+      c.name ? `${fmt(c.name)} — некорректное наименование` : '',
+      c.conflict ? `${fmt(c.conflict)} — код не соответствует наименованию` : '',
+    ].filter(Boolean);
+    const head = h('header', {class: 'check-head'},
+      h('h2', {id: 'check-title', text: c.both ? 'Файл не принят' : 'Проверьте позиции ТРУ'}),
+      h('p', {text: `Строк ТРУ: ${fmt(check.total)}. Найдено: ${parts.join('; ')}.`}));
+
+    if (c.both) {  // оба поля некорректны — только исправление файла
+      const bad = check.rows.filter(r => r.kind === 'both');
+      dialog.append(head,
+        h('div', {class: 'check-body'},
+          h('p', {class: 'check-note bad', text: 'В этих строках неверны и код ОКПД2, и наименование — по ним нельзя ни подобрать поставщиков, ни восстановить данные. Исправьте файл: в каждой строке должно быть хотя бы одно корректное поле.'}),
+          h('ul', {class: 'check-rows'}, bad.map(r => h('li', {class: 'check-row'},
+            h('p', {class: 'check-row-head', text: rowLabel(r)}),
+            h('p', {class: 'check-problem', text: r.problem}),
+            h('p', {class: 'check-hint', text: r.hint})))),
+          bad.length < c.both ? h('p', {class: 'muted', text: `Показаны первые ${fmt(bad.length)} из ${fmt(c.both)}.`}) : null,
+          h('p', {class: 'check-hint', text: 'Как исправить: наименование — название товара или услуги словами («Кефир 2,5%»), код ОКПД2 — цифры вида 32.50.13.110. Коды можно найти в классификаторе ОКПД2 или в прошлых закупках.'})),
+        h('footer', {class: 'check-foot'}, h('button', {class: 'btn btn-primary', type: 'button', text: 'Исправить файл', onclick: () => finish(null)})));
+      document.body.append(dialog);
+      dialog.showModal();
+      return;
+    }
+
+    // одно поле или противоречие: выбор сценария
+    const fixRows = check.rows.filter(r => r.kind === 'code' || r.kind === 'name');
+    const conflictRows = check.rows.filter(r => r.kind === 'conflict');
+    const state = {mode: null, trustAll: 'code', edits: {}, trust: {}};
+    const startBtn = h('button', {class: 'btn btn-primary', type: 'button', text: 'Запустить подбор', disabled: true});
+    const manualBox = h('div', {class: 'check-manual', hidden: true});
+    const validNote = h('p', {class: 'check-valid', 'aria-live': 'polite'});
+
+    const valueOf = r => state.edits[r.line]?.[r.kind === 'code' ? 'okpd2_code' : 'product_name'] ?? (r.kind === 'code' ? r.code : r.name);
+    const original = r => r.kind === 'code' ? normCode(r.code) : String(r.name || '').trim();
+    const current = r => r.kind === 'code' ? normCode(valueOf(r)) : String(valueOf(r)).trim();
+    // «исправлено» — только если значение изменено и стало корректным: исходный неверный код таким не считается
+    const rowFixed = r => current(r) !== original(r) && (r.kind === 'code' ? CODE_RE.test(current(r)) : nameValid(current(r)));
+    const rowBad = r => current(r) !== '' && current(r) !== original(r) && !rowFixed(r);  // введено, но не похоже на код/наименование
+    function refresh() {
+      const fixed = fixRows.filter(rowFixed).length;
+      startBtn.disabled = !state.mode;
+      // счёт — от всех строк с ошибкой в файле, а не только показанных в окне
+      validNote.textContent = state.mode === 'manual' && fixRows.length ? `Исправлено ${fmt(fixed)} из ${fmt(c.code + c.name)}` : '';
+      for (const el of dialog.querySelectorAll('[data-line]')) {
+        const r = fixRows.find(x => String(x.line) === el.dataset.line);
+        if (r) el.dataset.valid = rowFixed(r) ? 'yes' : rowBad(r) ? 'no' : '';
+      }
+    }
+    function editRow(r) {
+      const field = r.kind === 'code' ? 'okpd2_code' : 'product_name';
+      const input = h('input', {class: 'check-input', type: 'text', value: valueOf(r), 'aria-label': `${rowLabel(r)}: ${r.kind === 'code' ? 'код ОКПД2' : 'наименование'}`,
+        placeholder: r.kind === 'code' ? 'Код в формате XX.XX.XX.XXX' : 'Наименование товара или услуги', oninput: e => { state.edits[r.line] = {[field]: e.target.value}; refresh(); }});
+      const options = r.kind === 'code' ? (r.options || []).map(o => ({value: o.code, text: `${o.code} — ${o.title || 'код из справочника'}`, why: o.why}))
+        : r.suggest?.name ? [{value: r.suggest.name, text: r.suggest.name, why: 'типичное наименование для этого кода'}] : [];
+      return h('li', {class: 'check-row', 'data-line': String(r.line)},
+        h('p', {class: 'check-row-head'}, rowLabel(r), h('span', {class: 'check-mark', 'aria-hidden': 'true'})),
+        h('p', {class: 'check-context', text: r.kind === 'code' ? `Наименование: ${r.name}` : `Код ОКПД2: ${r.code}`}),
+        h('p', {class: 'check-problem', text: r.problem}),
+        h('label', {class: 'check-field'}, h('span', {text: r.kind === 'code' ? 'Код ОКПД2' : 'Наименование'}), input),
+        options.length ? h('div', {class: 'check-suggest'}, h('span', {class: 'muted', text: 'Подсказка:'}),
+          options.map(o => h('button', {class: 'check-chip', type: 'button', title: o.why || '', text: o.text,
+            onclick: () => { input.value = o.value; state.edits[r.line] = {[field]: o.value}; refresh(); }}))) : null,
+        h('p', {class: 'check-hint', text: r.hint}));
+    }
+    function trustRow(r) {
+      const name = `trust-${r.line}`;
+      const radio = (value, text) => h('label', {class: 'check-radio'},
+        h('input', {type: 'radio', name, value, checked: (state.trust[r.line] || state.trustAll) === value ? true : null,
+          onchange: () => { state.trust[r.line] = value; }}), h('span', {text}));
+      return h('li', {class: 'check-row'},
+        h('p', {class: 'check-row-head', text: rowLabel(r)}),
+        h('p', {class: 'check-context', text: `Наименование: ${r.name}`}),
+        h('p', {class: 'check-problem', text: r.problem}),
+        h('div', {class: 'check-radios', role: 'radiogroup', 'aria-label': rowLabel(r)},
+          radio('code', `Ориентироваться на код ${r.code}`), radio('name', `На наименование → ${r.suggest.code}`)));
+    }
+    const trustAll = c.conflict ? h('div', {class: 'check-trust'},
+      h('p', {}, h('strong', {text: 'Код не соответствует наименованию. '}), 'На что ориентироваться при подборе?'),
+      h('div', {class: 'segmented check-seg', role: 'radiogroup'}, [['code', 'На код ОКПД2'], ['name', 'На наименование']].map(([v, t]) =>
+        h('button', {type: 'button', role: 'radio', 'aria-checked': String(v === state.trustAll), 'data-trust': v, text: t, onclick: e => {
+          state.trustAll = v;
+          for (const b of e.currentTarget.parentNode.children) b.setAttribute('aria-checked', String(b.dataset.trust === v));
+          for (const r of conflictRows) if (!(r.line in state.trust)) { const el = dialog.querySelector(`input[name="trust-${r.line}"][value="${v}"]`); if (el) el.checked = true; }
+        }}))),
+      h('p', {class: 'check-hint', text: 'По умолчанию — код: заказчики нередко пишут к коду общее или неточное наименование. «На наименование» заменит код подходящим по названию из справочника.'})) : null;
+
+    const scenario = (mode, title, text) => h('button', {class: 'check-scenario', type: 'button', role: 'radio', 'aria-checked': 'false', 'data-mode': mode, onclick: e => {
+      state.mode = mode;
+      for (const b of dialog.querySelectorAll('.check-scenario')) b.setAttribute('aria-checked', String(b.dataset.mode === mode));
+      manualBox.hidden = mode !== 'manual';
+      refresh();
+    }}, h('strong', {text: title}), h('span', {text}));
+    if (fixRows.length) {
+      manualBox.append(h('ul', {class: 'check-rows'}, fixRows.map(editRow)));
+      if (check.truncated) manualBox.append(h('p', {class: 'muted', text: `Показаны первые ${fmt(fixRows.length)} из ${fmt(c.code + c.name)}; остальные будут исправлены автоматически.`}));
+    }
+    if (conflictRows.length) manualBox.append(h('h3', {class: 'check-sub', text: 'Код и наименование не соответствуют'}), h('ul', {class: 'check-rows'}, conflictRows.map(trustRow)));
+
+    dialog.append(head, h('div', {class: 'check-body'},
+      h('div', {class: 'check-scenarios', role: 'radiogroup', 'aria-label': 'Как исправить'},
+        scenario('auto', 'Исправить автоматически', 'По справочнику кодов закупок СПб: код — по наименованию позиции, наименование — по коду. Все исправления будут видны в результате.'),
+        scenario('manual', 'Исправлю сам', 'Список строк с ошибками и подсказками. Что не успеете исправить — перед запуском предложим исправить автоматически или оставить как есть.')),
+      trustAll, manualBox),
+      h('footer', {class: 'check-foot'}, validNote,
+        h('button', {class: 'btn btn-soft', type: 'button', text: 'Отмена', onclick: () => finish(null)}), startBtn));
+    startBtn.addEventListener('click', async () => {
+      const rows = {};
+      if (state.mode === 'manual') {
+        for (const r of fixRows.filter(rowFixed)) rows[r.line] = r.kind === 'code' ? {okpd2_code: current(r)} : {product_name: current(r)};
+        // не все исправлены — показать оставшиеся и спросить: исправить автоматически или оставить как есть
+        const left = fixRows.filter(r => !rowFixed(r));
+        if (left.length) {
+          const keep = await confirmUnresolved(left, c.code + c.name - fixRows.length);
+          if (keep === null) return;  // «Назад к исправлению»
+          for (const line of keep) rows[line] = {keep: true};
+        }
+      }
+      finish({mode: state.mode, rows, trust: state.trust, trust_all: state.trustAll});
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    refresh();
+  });
+}
+
+// Подтверждение при неисправленных строках: для всех и для каждой — исправить автоматически или оставить как есть.
+// Возвращает множество строк «оставить как есть» или null («Назад к исправлению»).
+function confirmUnresolved(rows, hidden = 0) {
+  return new Promise(resolve => {
+    const dialog = h('dialog', {class: 'check-dialog check-confirm', 'aria-labelledby': 'confirm-title'});
+    const finish = value => { dialog.close(); dialog.remove(); resolve(value); };
+    dialog.addEventListener('cancel', e => { e.preventDefault(); finish(null); });
+    const choice = {all: 'auto', row: {}};
+    const pick = r => choice.row[r.line] || choice.all;
+    const radios = r => h('div', {class: 'check-radios', role: 'radiogroup', 'aria-label': rowLabel(r)}, [['auto', 'Исправить автоматически'], ['keep', 'Оставить как есть']].map(([v, t]) =>
+      h('label', {class: 'check-radio'}, h('input', {type: 'radio', name: `left-${r.line}`, value: v, checked: pick(r) === v ? true : null,
+        onchange: () => { choice.row[r.line] = v; }}), h('span', {text: t}))));
+    const seg = h('div', {class: 'segmented check-seg', role: 'radiogroup', 'aria-label': 'Для всех строк'}, [['auto', 'Для всех: исправить автоматически'], ['keep', 'Для всех: оставить как есть']].map(([v, t]) =>
+      h('button', {type: 'button', role: 'radio', 'aria-checked': String(v === choice.all), 'data-v': v, text: t, onclick: e => {
+        choice.all = v; choice.row = {};
+        for (const b of e.currentTarget.parentNode.children) b.setAttribute('aria-checked', String(b.dataset.v === v));
+        for (const el of dialog.querySelectorAll(`input[type=radio][value="${v}"]`)) el.checked = true;
+      }})));
+    dialog.append(
+      h('header', {class: 'check-head'}, h('h2', {id: 'confirm-title', text: `Не все строки исправлены: ${fmt(rows.length + hidden)}`}),
+        h('p', {text: 'Ознакомьтесь со строками ниже и выберите, что с ними сделать при подборе.'})),
+      h('div', {class: 'check-body'},
+        h('div', {class: 'check-trust'}, seg,
+          h('p', {class: 'check-hint', text: '«Исправить автоматически» — код по наименованию позиции, наименование — типичное для кода (по справочнику закупок СПб). «Оставить как есть» — значение из файла: неверный код не участвует в поиске по коду, подбор идёт по тексту наименования.'})),
+        h('ul', {class: 'check-rows'}, rows.map(r => h('li', {class: 'check-row'},
+          h('p', {class: 'check-row-head', text: rowLabel(r)}),
+          h('p', {class: 'check-context', text: r.kind === 'code' ? `Наименование: ${r.name}` : `Код ОКПД2: ${r.code}`}),
+          h('p', {class: 'check-problem', text: r.problem}),
+          r.suggest ? h('p', {class: 'check-hint', text: `Автоматически: ${r.kind === 'code' ? r.suggest.code : `«${r.suggest.name}»`}`})
+            : h('p', {class: 'check-hint', text: 'Автоматически подобрать не удалось — строка останется как есть.'}),
+          radios(r)))),
+        hidden > 0 ? h('p', {class: 'muted', text: `Ещё ${fmt(hidden)} ${plural(hidden, 'строка', 'строки', 'строк')} не поместились в окно — они будут исправлены автоматически.`}) : null),
+      h('footer', {class: 'check-foot'},
+        h('button', {class: 'btn btn-soft', type: 'button', text: 'Назад к исправлению', onclick: () => finish(null)}),
+        h('button', {class: 'btn btn-primary', type: 'button', text: 'Подтвердить и запустить', onclick: () => finish(new Set(rows.filter(r => pick(r) === 'keep').map(r => String(r.line))))})));
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
+function failUpload(message, canRetry = true) {
   state.busy = false;
   state.autoStart = false;
   remember(null);
   show('upload');
   renderTray();
-  uploadError(message, FileSelection.isReady(state.selection));
+  // файл с ошибкой «оба поля» повторять бессмысленно — только исправить и загрузить заново
+  uploadError(message, canRetry && FileSelection.isReady(state.selection));
 }
 
 /* ---------- Прогресс ---------- */
@@ -391,11 +589,23 @@ function renderLotDetail() {
     meta.length ? h('dl', {class: 'lot-meta'}, meta.map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v})))) : null,
   ];
 
+  if (lot.okpd2_fixed || lot.names_filled) {
+    // проверка при загрузке (окно «Проверьте позиции ТРУ», web-service/okpd_check.py) исправила коды или наименования
+    const what = [lot.okpd2_fixed ? `коды ОКПД2 — ${fmt(lot.okpd2_fixed)}` : '', lot.names_filled ? `наименования — ${fmt(lot.names_filled)}` : ''].filter(Boolean).join(', ');
+    children.push(h('div', {class: 'alert alert-fix', role: 'note'}, h('p', {},
+      h('strong', {text: `Исправлены позиции ТРУ: ${what} из ${fmt(lot.items_total)}. `}),
+      'В файле были пустые, несуществующие или не соответствующие друг другу коды и наименования. Исправили их вручную или по справочнику кодов закупок СПб — подбор шёл по исправленным данным. Исходные значения зачёркнуты в списке позиций, причина — в подсказке.')));
+  }
+
   if (lot.items?.length) {
     const rest = lot.items_total - lot.items.length;
-    children.push(h('details', {class: 'lot-items'},
+    children.push(h('details', {class: 'lot-items', open: lot.okpd2_fixed || lot.names_filled ? true : null},
       h('summary', {text: `Позиции ТРУ и коды ОКПД2 (${fmt(lot.items_total || lot.items.length)})`}),
-      h('ul', {}, lot.items.map(i => h('li', {}, h('span', {text: i.name || 'Без названия'}), i.okpd2 ? h('code', {title: 'ОКПД2', text: i.okpd2}) : null))),
+      h('ul', {}, lot.items.map(i => h('li', {},
+        h('span', {class: 'item-name'}, i.name || 'Без названия',
+          i.name_original !== undefined ? h('small', {class: 'okpd-fixed', title: 'Наименование исправлено при загрузке', text: `в файле «${i.name_original || 'пусто'}»`}) : null),
+        i.okpd2 ? h('span', {class: 'item-code'}, h('code', {title: i.okpd2_original !== undefined ? `ОКПД2 исправлен: в файле «${i.okpd2_original || 'пусто'}»` : 'ОКПД2', text: i.okpd2}),
+          i.okpd2_original !== undefined ? h('small', {class: 'okpd-fixed', title: 'Почему исправлен: ' + (i.okpd2_fix_reason || 'кода нет в классификаторе'), text: `в файле ${i.okpd2_original || 'без кода'}`}) : null) : null))),
       rest > 0 ? h('p', {class: 'more', text: `Ещё ${fmt(rest)} — в выгрузке CSV.`}) : null));
   }
 
@@ -659,7 +869,7 @@ async function loadOkpdCoverage(c, lot, box) {
     count.textContent = data.available ? `${data.matched} из ${data.total}` + (data.partial ? ` · частично ${data.partial}` : '') : `— из ${data.total}`;
     content.replaceChildren(
       h('ul', {class: 'okpd-list'}, data.items.map(item => h('li', {'data-state': okpdState(item)},
-        h('span', {class: 'okpd-code', text: item.code}),
+        h('span', {class: 'okpd-code'}, item.code, item.original ? h('small', {class: 'okpd-fixed', title: 'Код исправлен при загрузке: в файле такого кода нет', text: ` в файле ${item.original}`}) : null),
         h('span', {text: okpdLabel(item)})))),
       h('p', {class: 'okpd-note', text: !data.total ? 'В позициях лота коды ОКПД2 не указаны.' : data.available
         ? 'Сверка с историей побед и участий поставщика в закупках СПб (выгрузка организаторов 2024–2025). Частичное совпадение — общий вид, подгруппа, группа или класс ОКПД2. Отсутствие кода не означает, что поставщик не может поставить товар.'

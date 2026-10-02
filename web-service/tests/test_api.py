@@ -234,4 +234,56 @@ class ApiTests(unittest.TestCase):
             self.assertNotIn('cached_from',run())
 
 
+    def upload_pair(self,items):
+        job=self.create()
+        notices='lot_id;subject\n1;Поставка молочной продукции\n2;Поставка катетеров\n'.encode()
+        self.call(f'/api/jobs/{job}/files/notices','PUT',notices,{'X-Filename':'notices.csv'})
+        self.call(f'/api/jobs/{job}/files/items','PUT',items.encode(),{'X-Filename':'items.csv'})
+        return job
+
+    def finish(self,job,body=b''):
+        headers={'Content-Type':'application/json'} if body else {}
+        self.assertEqual(self.call(f'/api/jobs/{job}/start','POST',body,headers)[0],202)
+        return self.wait(job)
+
+    def test_okpd2_check_one_field_auto_and_manual(self):
+        items='lot_id;product_name;okpd2_code\n1;Кефир;02.51.52.140\n1;-;10.51.52.140\n2;Катетер баллонный;32.50.13.110\n'
+        job=self.upload_pair(items)
+        code,raw=self.call(f'/api/jobs/{job}/check','POST',b'')
+        check=json.loads(raw)
+        self.assertEqual(code,200,check)
+        self.assertEqual((check['counts']['code'],check['counts']['name'],check['counts']['both']),(1,1,0))
+        bad_code=next(r for r in check['rows'] if r['kind']=='code')
+        self.assertEqual((bad_code['line'],bad_code['suggest']['code']),(2,'10.51.52.140'))
+        # автоисправление: код по справочнику, наименование — типичное для кода
+        done=self.finish(job,json.dumps({'okpd2':{'mode':'auto'}}).encode())
+        self.assertEqual(done['status'],'completed',done)
+        self.assertEqual((done['stats']['okpd2_fixed'],done['stats']['names_filled']),(1,1))
+        # вручную: значение пользователя важнее подсказки
+        job=self.upload_pair(items)
+        self.call(f'/api/jobs/{job}/check','POST',b'')
+        done=self.finish(job,json.dumps({'okpd2':{'mode':'manual','rows':{'2':{'okpd2_code':'10.51.52.120'},'3':{'product_name':'Ряженка'}}}}).encode())
+        self.assertEqual(done['status'],'completed',done)
+        lot=json.loads(self.call(f'/api/jobs/{job}/lots')[1])['lots']
+        names={i['name']:i for l in lot for i in l['items']}
+        self.assertEqual(names['Кефир']['okpd2'],'10.51.52.120')
+        self.assertEqual(names['Ряженка']['name_original'],'-')
+        # «оставить как есть» — код из файла не трогаем, в предупреждениях это видно
+        job=self.upload_pair(items)
+        self.call(f'/api/jobs/{job}/check','POST',b'')
+        done=self.finish(job,json.dumps({'okpd2':{'mode':'manual','rows':{'2':{'keep':True}}}}).encode())
+        self.assertEqual(done['stats']['kept_as_is'],1)
+        lot=json.loads(self.call(f'/api/jobs/{job}/lots')[1])['lots']
+        self.assertEqual({i['name']:i['okpd2'] for l in lot for i in l['items']}['Кефир'],'02.51.52.140')
+
+    def test_okpd2_both_fields_invalid_rejected(self):
+        job=self.upload_pair('lot_id;product_name;okpd2_code\n1;Кефир;10.51.52.140\n2;???;02.99\n')
+        check=json.loads(self.call(f'/api/jobs/{job}/check','POST',b'')[1])
+        self.assertEqual(check['counts']['both'],1)
+        self.assertIn('хотя бы одно', check['rows'][0]['hint'])
+        done=self.finish(job)  # и без окна сервер не примет такую строку
+        self.assertEqual(done['status'],'failed')
+        self.assertIn('строка 3, лот 2',done['message'])
+
+
 if __name__ == '__main__':unittest.main()

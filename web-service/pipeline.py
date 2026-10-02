@@ -9,6 +9,7 @@ from pathlib import Path
 
 from models import Candidate, Lot
 from integrations import recommender, enricher
+import okpd_check
 
 csv.field_size_limit(1_000_000)
 OUTPUT_FIELDS = ["lot_id", "subject", "rank", "supplier_name", "supplier_inn", "supplier_kpp", "score", "role", "status", "region", "is_smp", "is_new", "reasons", "sources", "enrichment_status", "is_demo"]
@@ -139,6 +140,10 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
     stats = {"notices": 0, "items": 0, "lots": 0, "recommendations": 0, "verified": 0, "unverified": 0, "without_items": 0, "without_candidates": 0, "enrichment_errors": 0, "skipped_items": 0}
     preview = []
     formats = {}
+    okpd_fixes, okpd_unknown, okpd_errors, names_filled, kept_as_is = [], 0, [], 0, 0
+    # выбор пользователя в окне проверки ОКПД2 и наименований (server.py, /check → /start)
+    choice_path = folder / "okpd2_choice.json"
+    okpd_choice = json.loads(choice_path.read_text(encoding="utf-8")) if choice_path.exists() else {}
     with closing(sqlite3.connect(folder / "input.sqlite")) as db, db:
         db.execute("CREATE TABLE notices (lot_id TEXT PRIMARY KEY, data TEXT NOT NULL)")
         db.execute("CREATE TABLE items (lot_id TEXT NOT NULL, data TEXT NOT NULL)")
@@ -148,6 +153,24 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                 if kind == "items" and not row["product_name"] and not row["okpd2_code"]:
                     stats["skipped_items"] += 1
                     continue
+                if kind == "items":
+                    # «защита от дурака»: строка с некорректными и кодом, и наименованием не принимается;
+                    # одно поле — исправление пользователя из окна проверки или автоисправление по справочнику
+                    issue = okpd_check.analyze_row(row)
+                    if issue and issue["kind"] == "both":
+                        okpd_errors.append(f'строка {line}, лот {row["lot_id"]}: {issue["problem"]}')
+                        continue
+                    user_row = okpd_choice.get("rows", {}).get(str(line))
+                    if user_row and user_row.get("keep") and issue:
+                        kept_as_is += 1
+                    fix = okpd_check.resolve(row, user_row,
+                                             okpd_choice.get("trust", {}).get(str(line), okpd_choice.get("trust_all", "code")))
+                    if fix and fix["from"] != fix["to"]:
+                        okpd_fixes.append(fix)
+                    if row.get("product_name_original") is not None:
+                        names_filled += 1
+                    if not fix and not (user_row and user_row.get("keep")) and okpd_check.unknown(row["okpd2_code"]):
+                        okpd_unknown += 1
                 try:
                     db.execute(f"INSERT INTO {table} VALUES (?, ?)", (row["lot_id"], json.dumps(row, ensure_ascii=False)))
                 except sqlite3.IntegrityError:
@@ -157,6 +180,11 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                 if stats[stat] % 5000 == 0:
                     db.commit()
                     update(message=f'Проверено строк: {stats[stat]:,}', stats=dict(stats))
+            if okpd_errors:
+                more = f" и ещё {len(okpd_errors) - 5}" if len(okpd_errors) > 5 else ""
+                raise ValueError(f"ТРУ: в {len(okpd_errors)} строках некорректны и код ОКПД2, и наименование — файл не принят. "
+                                 f"{'; '.join(okpd_errors[:5])}{more}. Исправьте хотя бы одно поле в каждой такой строке: "
+                                 f"наименование товара или код ОКПД2 вида 32.50.13.110.")
             if not stats[stat]:
                 raise ValueError(f'{"Извещения" if kind == "notices" else "ТРУ"}: нет строк данных')
             db.commit()
@@ -173,6 +201,17 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f'Пропущено извещений без ТРУ: {stats["without_items"]}.')
         if stats["skipped_items"]:
             warnings.append(f'Пропущено строк ТРУ без названия и кода ОКПД2: {stats["skipped_items"]}. Остальные позиции включены в подбор.')
+        warnings += okpd_check.summary(okpd_fixes, stats["items"], okpd_unknown)
+        if names_filled:
+            warnings.append(f"Наименования: у {names_filled} {okpd_check._plural(names_filled, 'позиции', 'позиций', 'позиций')} "
+                            f"наименование было некорректным — исправлено (вручную или типичным наименованием по коду ОКПД2). "
+                            f"Исходное видно в позициях лота.")
+        if kept_as_is:
+            warnings.append(f"Позиции ТРУ: {kept_as_is} {okpd_check._plural(kept_as_is, 'строка оставлена', 'строки оставлены', 'строк оставлено')} "
+                            f"как в файле по вашему подтверждению — неверный код в поиске по коду не участвует, подбор по тексту.")
+        stats["okpd2_fixed"] = len(okpd_fixes)
+        stats["names_filled"] = names_filled
+        stats["kept_as_is"] = kept_as_is
         update(progress=43, message="Файлы проверены", stats=dict(stats), warnings=warnings)
         lot_keys = []  # (качество, смещение, длина) строк lots.part — для сортировки лотов
         with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f, (folder / "lots.part").open("wb") as lots_out:
@@ -204,7 +243,13 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                     stats["without_candidates"] += 1
                 card = {"lot_id": lot_id, "subject": lot.notice["subject"], "start_price": lot.notice.get("start_price", ""),
                         "is_smp": lot.notice.get("is_smp", ""), "items_total": len(lot.items),
-                        "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", "")} for i in lot.items[:30]]}
+                        "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", ""),
+                                   **({"okpd2_original": i["okpd2_original"], "okpd2_fix_reason": i.get("okpd2_fix_reason", "")}
+                                      if "okpd2_original" in i else {}),
+                                   **({"name_original": i["product_name_original"]} if i.get("product_name_original") is not None else {})}
+                                  for i in lot.items[:30]],
+                        "okpd2_fixed": sum(1 for i in lot.items if "okpd2_original" in i),
+                        "names_filled": sum(1 for i in lot.items if i.get("product_name_original") is not None)}
                 for group, chosen in groups.items():
                     card[group] = []
                     for rank, candidate in enumerate(chosen, 1):

@@ -16,9 +16,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from inputs import prepare_sources
+
 from exports import export_lot
 from okpd_coverage import coverage
-from pipeline import run_pipeline
+import okpd_check
+from pipeline import read_csv, run_pipeline
 from integrations import recommender, enricher, analysis
 
 ROOT = Path(__file__).resolve().parent
@@ -38,7 +40,7 @@ CACHE_FIELDS = ("stats", "warnings", "preview", "formats", "detected")
 
 def code_version():
     """Отпечаток кода и модели: после переобучения или правки конвейера кэш не используется."""
-    paths = [ROOT / "pipeline.py", ROOT / "inputs.py", *sorted((ROOT / "integrations").glob("*.py")),
+    paths = [ROOT / "pipeline.py", ROOT / "inputs.py", ROOT / "okpd_check.py", ROOT.parent / "models" / "okpd2_reference.json.gz", *sorted((ROOT / "integrations").glob("*.py")),
              *(ROOT.parent / "models" / n for n in ("meta.json", "ranker.txt", "fit_calibration.json"))]
     return hashlib.sha256("|".join(f"{p.name}:{p.stat().st_mtime_ns}" for p in paths if p.exists()).encode()).hexdigest()[:16]
 
@@ -49,7 +51,7 @@ def cache_key(job):
         return None
     # тип файла с автоопределением задаёт содержимое, а не порядок загрузки
     hashes = sorted(f["sha256"] if k.startswith("src-") else f"{k}:{f['sha256']}" for k, f in files.items())
-    raw = json.dumps([hashes, job["top_k"], job["mode"], code_version()])
+    raw = json.dumps([hashes, job["top_k"], job["mode"], code_version(), job.get("okpd2_choice")], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -75,7 +77,7 @@ def worker(job_id):
     update_job(job_id, status="processing")
     try:
         sources = {k: v for k, v in job["files"].items() if k.startswith("src-")}
-        if sources:
+        if sources and not job.get("prepared"):  # после /check файлы уже разобраны в notices.csv и items.csv
             update_job(job_id, stage="reading", progress=2, message="Читаем файлы…")
             update_job(job_id, detected=prepare_sources(DATA / job_id, sources, lambda **kw: update_job(job_id, **kw)))
         run_pipeline(DATA / job_id, job["mode"], job["top_k"], lambda **kw: update_job(job_id, **kw))
@@ -165,6 +167,45 @@ class Handler(BaseHTTPRequestHandler):
                 if matched > offset + limit:
                     break
         self.reply(200, {"offset": offset, "lots": lots, "has_more": matched > offset + len(lots), "total": None if needle else job.get("stats", {}).get("lots")})
+
+    def okpd2_choice(self, payload):
+        """Выбор из окна проверки: {"mode": "auto"|"manual", "rows": {строка: {okpd2_code, product_name}},
+        "trust": {строка: "code"|"name"}, "trust_all": "code"|"name"}."""
+        raw = payload.get("okpd2") if isinstance(payload, dict) else None
+        if not raw:
+            return None
+        if not isinstance(raw, dict) or raw.get("mode") not in ("auto", "manual"):
+            raise ValueError("okpd2.mode должен быть auto или manual")
+        # строка → исправленные поля или {"keep": true} — оставить как в файле (подтверждено пользователем)
+        rows = {str(k): {"keep": True} if v.get("keep") is True else {f: str(v[f])[:500] for f in ("okpd2_code", "product_name") if f in v}
+                for k, v in (raw.get("rows") or {}).items() if isinstance(v, dict) and str(k).isdigit()}
+        trust = {str(k): v for k, v in (raw.get("trust") or {}).items() if str(k).isdigit() and v in ("code", "name")}
+        return {"mode": raw["mode"], "rows": rows, "trust": trust,
+                "trust_all": raw.get("trust_all") if raw.get("trust_all") in ("code", "name") else "code"}
+
+    def reply_check(self, job_id):
+        """Проверка ТРУ до запуска подбора: строки с некорректным кодом ОКПД2 и/или наименованием."""
+        with LOCK:
+            job = JOBS.get(job_id)
+            if job is None:
+                self.reply(404, {"error": "Задача не найдена"})
+                return
+            if job["status"] != "uploading":
+                self.reply(409, {"error": "Проверка доступна до запуска подбора"})
+                return
+            files = dict(job["files"])
+        folder = DATA / job_id
+        sources = {k: v for k, v in files.items() if k.startswith("src-")}
+        if sources and not job.get("prepared"):
+            detected = prepare_sources(folder, sources)
+            update_job(job_id, prepared=True, detected=detected)
+        if not (folder / "items.csv").exists():
+            self.reply(409, {"error": "Загрузите файлы извещений и ТРУ"})
+            return
+        rows = ((line, row["lot_id"], row) for row, line, _, _ in read_csv(folder / "items.csv", "items"))
+        result = okpd_check.analyze(rows)
+        update_job(job_id, okpd2_check=result["counts"])
+        self.reply(200, result)
 
     def do_GET(self):
         if not self.safe_origin():
@@ -292,8 +333,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(recommender, "READY", False) or not hasattr(recommender, "recommend_detailed"):
                     self.reply(503, {"error": "Модель не подключена. См. INTEGRATION.md"})
                     return
+                fixes = []
+                for item in payload.get("items") or [] if isinstance(payload, dict) else []:
+                    if isinstance(item, dict) and item.get("okpd2"):
+                        row = {"okpd2_code": item["okpd2"], "product_name": item.get("name", "")}
+                        if fix := okpd_check.fix_item(row):
+                            item["okpd2"] = row["okpd2_code"]
+                            fixes.append(fix)
                 try:
                     result = recommender.recommend_detailed(payload)
+                    if fixes and isinstance(result, dict):
+                        result.setdefault("warnings", []).extend(okpd_check.summary(fixes, len(payload["items"]), 0))
                 except ValueError:
                     raise
                 except Exception:
@@ -333,10 +383,15 @@ class Handler(BaseHTTPRequestHandler):
                     update_job(job_id)
                 self.reply(201, JOBS[job_id])
                 return
+            match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})/check", route)
+            if match:
+                self.reply_check(match[1])
+                return
             match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})/start", route)
             if not match or match[1] not in JOBS:
                 self.reply(404, {"error": "Задача не найдена"})
                 return
+            choice = self.okpd2_choice(self.body_json(max_size=4 * 1024 * 1024) if int(self.headers.get("Content-Length") or 0) else {})
             with LOCK:
                 job_id = match[1]
                 job = JOBS[job_id]
@@ -345,6 +400,9 @@ class Handler(BaseHTTPRequestHandler):
                 if job["status"] != "uploading" or not ready:
                     self.reply(409, {"error": "Загрузите файлы извещений и ТРУ; повторный запуск задачи недоступен"})
                     return
+                if choice:
+                    (DATA / job_id / "okpd2_choice.json").write_text(json.dumps(choice, ensure_ascii=False), encoding="utf-8")
+                    job["okpd2_choice"] = choice
                 key = cache_key(job)
                 source = cached_job(key, job_id) if key and CACHE_TTL > 0 else None
                 if not source and any(j["status"] in {"queued", "processing"} for j in JOBS.values()):
