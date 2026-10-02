@@ -50,7 +50,13 @@ const WIN_RE = /^Вероятность победы по модели:\s*([\d.,
 const winChance = c => (c.reasons || []).map(r => WIN_RE.exec(r)).find(Boolean)?.[1] ?? null;
 const pWin = c => c.explanation?.p_win ?? (winChance(c) != null ? Number(winChance(c).replace(',', '.')) / 100 : null);
 const fmtChance = p => p < 0.01 ? 'меньше 1%' : Math.round(p * 100) + '%';
-const mainReason = c => (c.reasons || []).find(r => !WIN_RE.test(r)) || '—';
+const FIT_RE = /^Соответствие лоту:/;
+const mainReason = c => (c.reasons || []).find(r => !WIN_RE.test(r) && !FIT_RE.test(r)) || '—';
+// «Соответствие» 0–100 (score модели): оценка выше, чем у стольких процентов реальных победителей похожих закупок.
+// В отличие от шанса победы не делится между ~300 кандидатами лота
+const hasFit = c => c.explanation?.fit != null;
+const fmtFit = v => String(Math.round(Number(v)));
+const fitTone = v => v >= 70 ? 'high' : v >= 40 ? 'mid' : 'low';
 const UNKNOWN_ROLE = /^не определена$/i;
 
 function h(tag, props, ...children) {
@@ -272,7 +278,7 @@ async function poll() {
 
 /* ---------- Результат ---------- */
 const GROUP_CAPTION = {
-  verified: 'Компании с историей закупок, ранжированные моделью. Шанс победы — вероятность по модели; нажмите на компанию, чтобы увидеть, почему она на этом месте.',
+  verified: 'Компании с историей закупок, ранжированные моделью. Соответствие 0–100 — насколько компания похожа на реальных победителей таких закупок; нажмите на компанию, чтобы увидеть, почему она на этом месте.',
   unverified: 'Новые компании из открытых реестров по кодам ОКПД2 лота. Моделью не оценивались — нужна ручная проверка.',
 };
 
@@ -292,7 +298,7 @@ async function showResults(job) {
   $('count-verified').textContent = fmt(groupCount('verified'));
   $('count-unverified').textContent = fmt(groupCount('unverified'));
   $('demo-note').hidden = job.mode !== 'demo';
-  const warnings = job.warnings || [];
+  const warnings = [...(job.cached_from ? [job.message] : []), ...(job.warnings || [])];
   $('warnings').replaceChildren(...(warnings.length ? [h('ul', {}, warnings.map(w => h('li', {text: w})))] : []));
   $('warnings').hidden = !warnings.length;
   selectGroup(state.group, false);
@@ -341,10 +347,14 @@ function renderLots() {
     h('button', {class: 'lot-btn', type: 'button', 'data-lot': lot.lot_id, 'aria-current': lot.lot_id === state.lotId ? 'true' : 'false', onclick: () => selectLot(lot.lot_id)},
       h('span', {class: 'lot-id', text: 'Лот ' + lot.lot_id}),
       h('span', {class: 'lot-subject', text: lot.subject}),
-      h('span', {class: 'lot-count', title: 'Поставщиков в списке', text: String(lot[state.group].length)})))) :
+      lot.quality && state.group === 'verified'
+        ? h('span', {class: 'lot-count lot-quality', 'data-tone': fitTone(lot.quality.value), title: qualityTitle(lot.quality), text: String(lot.quality.value)})
+        : h('span', {class: 'lot-count', title: 'Поставщиков в списке', text: String(lot[state.group].length)})))) :
     [h('li', {class: 'lots-empty', text: state.query ? 'Ничего не найдено. Попробуйте номер лота, часть предмета или ИНН.' : 'Нет лотов с результатом.'})]));
   $('lots-more').hidden = !state.hasMore;
 }
+
+const qualityTitle = q => `Качество подбора ${q.value} из 100: соответствие лучших компаний ${q.strength}, данные из открытых источников по ${q.data}% компаний. Лоты идут от лучших к худшим.`;
 
 function selectLot(lotId) {
   state.lotId = lotId;
@@ -374,6 +384,7 @@ function renderLotDetail() {
   if (price) meta.push(['НМЦК', price]);
   if (lot.is_smp !== undefined && lot.is_smp !== '') meta.push(['Только для МСП', yes(lot.is_smp) ? 'Да' : 'Нет']);
   if (lot.items_total) meta.push(['Позиций ТРУ', fmt(lot.items_total)]);
+  if (lot.quality) meta.push(['Качество подбора', `${lot.quality.value} из 100`]);
 
   const children = [
     h('span', {class: 'lot-chip', text: 'Лот ' + lot.lot_id}),
@@ -400,7 +411,7 @@ function renderLotDetail() {
     const showRole = rows.some(r => r.role && !UNKNOWN_ROLE.test(r.role));
     section.append(h('div', {class: 'sup-head', 'aria-hidden': 'true'},
       h('span', {text: '№'}), h('span', {text: 'Поставщик'}), h('span', {text: showRole ? 'Роль' : 'Главная причина'}),
-      verified ? [h('span', {text: 'Шанс победы'}), h('span', {text: 'Статус'})] : h('span', {text: 'Почему найден'}), h('span')));
+      verified ? [h('span', {text: rows.some(hasFit) ? 'Соответствие' : 'Шанс победы'}), h('span', {text: 'Статус'})] : h('span', {text: 'Почему найден'}), h('span')));
     section.append(h('div', {class: 'sup-list', role: 'list'}, rows.map(c => h('div', {role: 'listitem'}, supplierRow(c, lot, showRole)))));
   }
   children.push(section);
@@ -411,14 +422,15 @@ function supplierRow(c, lot, showRole) {
   const verified = state.group === 'verified';
   const p = pWin(c);
   const best = Math.max(...lot[state.group].map(x => pWin(x) || 0));
-  const pct = p != null && best > 0 ? Math.max(2, Math.round(100 * p / best)) : Math.max(2, Math.min(100, c.score));
+  const fit = hasFit(c);
+  const pct = fit ? Math.max(2, Math.round(c.score)) : p != null && best > 0 ? Math.max(2, Math.round(100 * p / best)) : Math.max(2, Math.min(100, c.score));
   return h('button', {class: 'sup-row', type: 'button', 'aria-haspopup': 'dialog', onclick: e => openSheet(c, lot, e.currentTarget)},
     h('span', {class: 'rank' + (verified && c.rank <= 3 ? ' rank-' + c.rank : ''), text: String(c.rank)}),
     h('span', {class: 'sup-name'}, h('strong', {text: displayName(c)}),
       h('span', {text: hasName(c) ? (c.supplier_inn ? 'ИНН ' + c.supplier_inn : 'ИНН не указан') : noNameNote(c)})),
     showRole ? h('span', {class: 'sup-cell role', text: c.role || '—'}) : h('span', {class: 'sup-cell reason-cell', text: mainReason(c)}),
     verified
-      ? [h('span', {class: 'score'}, h('b', {text: p != null ? fmtChance(p) : fmtScore(c.score)}), h('span', {class: 'meter', 'aria-hidden': 'true'}, h('span', {style: `width:${pct}%`})),
+      ? [h('span', {class: 'score', 'data-tone': fit ? fitTone(c.score) : null}, h('b', {text: fit ? fmtFit(c.score) : p != null ? fmtChance(p) : fmtScore(c.score)}), h('span', {class: 'meter', 'aria-hidden': 'true'}, h('span', {style: `width:${pct}%`})),
            c.explanation?.of ? h('small', {text: `место ${c.explanation.place} из ${fmt(c.explanation.of)}`}) : null),
          h('span', {class: 'chip', 'data-tone': statusTone(c.status), text: c.status})]
       : h('span', {class: 'sup-cell sup-reason', text: c.reasons?.[0] || 'Причина не указана'}),
@@ -503,7 +515,9 @@ function explainSection(c, lot) {
   const list = lot.verified || [];
   const i = list.indexOf(c);
   const parts = [h('h3', {text: c.rank === 1 ? 'Почему на первом месте' : `Почему на ${c.rank}-м месте`}),
-    h('p', {class: 'score-explain', text: `Модель сравнила ${fmt(e.of)} ${plural(e.of, 'кандидата', 'кандидатов', 'кандидатов')} с историей закупок по этому лоту. Шанс победы ${fmtChance(e.p_win)} рассчитан из их оценок, а оценка складывается из вкладов признаков ниже.`})];
+    h('p', {class: 'score-explain', text: e.fit != null
+      ? `Соответствие ${fmtFit(e.fit)} из 100: оценка модели выше, чем у ${fmtFit(e.fit)}% реальных победителей похожих закупок. Шанс именно этой победы — ${fmtChance(e.p_win)}: он делится между всеми ${fmt(e.of)} кандидатами лота, поэтому у сильных, но не первых компаний он мал. Оценка складывается из вкладов признаков ниже.`
+      : `Модель сравнила ${fmt(e.of)} ${plural(e.of, 'кандидата', 'кандидатов', 'кандидатов')} с историей закупок по этому лоту. Шанс победы ${fmtChance(e.p_win)} рассчитан из их оценок, а оценка складывается из вкладов признаков ниже.`})];
   const other = c.rank === 1 ? list[i + 1] : list[i - 1];
   if (other?.explanation?.factors) parts.push(contrast(c, other, c.rank === 1));
   const top = e.factors.filter(f => Math.abs(f.phi) >= MIN_PHI).sort((a, b) => Math.abs(b.phi) - Math.abs(a.phi)).slice(0, 7);
@@ -524,7 +538,7 @@ function contrast(c, other, ahead) {
   const diffs = c.explanation.factors.filter(f => theirs[f.feature]).map(f => ({f, o: theirs[f.feature], d: f.phi - theirs[f.feature].phi}));
   const side = diffs.filter(x => ahead ? x.d >= MIN_PHI : x.d <= -MIN_PHI).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
   const sum = side.reduce((acc, x) => acc + Math.abs(x.d), 0);
-  const who = `№${other.rank} — ${displayName(other)}, шанс ${fmtChance(pWin(other))}`;
+  const who = `№${other.rank} — ${displayName(other)}, ` + (hasFit(other) ? `соответствие ${fmtFit(other.score)}` : `шанс ${fmtChance(pWin(other))}`);
   if (!side.length) return h('p', {class: 'note', text: `${ahead ? 'Опережает' : 'Уступает'} ${who} по совокупности мелких различий.`});
   return h('div', {class: 'contrast'},
     h('p', {class: 'contrast-head'}, h('strong', {text: ahead ? 'Опережает ' : 'Уступает '}), who, ahead ? ' — прежде всего за счёт:' : ' — прежде всего из-за:'),
@@ -534,11 +548,8 @@ function contrast(c, other, ahead) {
       h('span', {class: 'contrast-share', text: `${Math.round(100 * Math.abs(x.d) / sum)}% разрыва`})))));
 }
 
-function openSheet(c, lot, trigger) {
-  state.lastFocus = trigger || document.activeElement;
-  const verified = !c.is_new;
-  $('sheet-context').textContent = verified ? `${c.rank}-е место по лоту ${lot.lot_id}` : `Новая компания для лота ${lot.lot_id}`;
-  $('sheet-title').textContent = displayName(c);
+// Плашки под названием: ИНН с копированием, КПП, регион. Перерисовываются, когда карточка нашла название
+function sheetIds(c) {
   const ids = [];
   if (c.supplier_inn) {
     const copy = h('button', {class: 'icon-btn', type: 'button', 'aria-label': 'Скопировать ИНН', title: 'Скопировать ИНН'}, icon('copy'));
@@ -553,9 +564,18 @@ function openSheet(c, lot, trigger) {
   }
   if (c.supplier_kpp) ids.push(h('span', {class: 'id-chip'}, h('span', {text: 'КПП'}), c.supplier_kpp));
   if (c.region) ids.push(h('span', {class: 'id-chip', text: c.region}));
-  $('sheet-ids').replaceChildren(...ids);
+  return ids;
+}
+
+function openSheet(c, lot, trigger) {
+  state.lastFocus = trigger || document.activeElement;
+  const verified = !c.is_new;
+  $('sheet-context').textContent = verified ? `${c.rank}-е место по лоту ${lot.lot_id}` : `Новая компания для лота ${lot.lot_id}`;
+  $('sheet-title').textContent = displayName(c);
+  $('sheet-ids').replaceChildren(...sheetIds(c));
   const p = pWin(c);
   $('sheet-score').replaceChildren(!verified ? h('div', {class: 'unscored', text: 'Моделью не оценён'})
+    : hasFit(c) ? ring(c.score, 'соответствие', fmtFit(c.score), `Соответствие ${fmtFit(c.score)} из 100`)
     : p != null ? ring(p * 100, 'шанс победы', fmtChance(p), `Шанс победы ${fmtChance(p)}`) : ring(c.score));
 
   const sections = [];
@@ -647,8 +667,13 @@ async function loadCompany(c, box) {
 function renderCompany(c, card, box) {
   const co = card.company || {};
   const name = co.name_short || co.name_full;
-  // Модель отдаёт ИНН вместо названия — подставляем найденное
-  if (name && !hasName(c)) $('sheet-title').textContent = name;
+  // Модель отдаёт ИНН вместо названия — подставляем найденное в кандидата: шапку карточки и строку в списке
+  if (name && !hasName(c)) {
+    c.supplier_name = name;
+    $('sheet-title').textContent = name;
+    $('sheet-ids').replaceChildren(...sheetIds(c));
+    renderLotDetail();
+  }
   const ids = $('sheet-ids');
   if (co.kpp && !c.supplier_kpp) ids.append(h('span', {class: 'id-chip'}, h('span', {text: 'КПП'}), co.kpp));
   if (co.region_name && !c.region) ids.append(h('span', {class: 'id-chip', text: co.region_name}));

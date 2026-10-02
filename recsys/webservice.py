@@ -130,6 +130,7 @@ def recommend_detailed(payload: dict) -> dict:
         'inn': r['inn'],
         'score': round(100.0 * (1 - (r['rank'] - 1) / max(n_cands, 1)), 1),
         'p_win': round(float(r['p_win']), 4),
+        'fit': None if r['fit'] != r['fit'] else round(float(r['fit']), 1),
         'status': r['status'],
         'status_rule': r['status_rule'],
         'reasons': r['reasons'],
@@ -159,15 +160,17 @@ def recommend(lot, top_k: int) -> list:
     checked_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
     res = []
     for r in top.to_dict('records'):
-        # score — место среди всех кандидатов лота по шкале 0–100: 100 у лучшего, ~97 у десятого из 300.
-        # Так кандидаты с историей стоят выше новых компаний из обогащения (у них потолок 75).
-        score = round(100.0 * (1 - (r['rank'] - 1) / max(n_cands, 1)), 1)
+        # score — «Соответствие» 0–100: процентиль оценки среди оценок реальных победителей (Recommender.fit).
+        # В отличие от шанса победы не делится между ~300 кандидатами: сильная компания не получает «меньше 1%».
+        # Без файла калибровки — место среди кандидатов лота (100 у лучшего).
+        fit = r['fit']
+        score = round(float(fit), 1) if fit == fit else round(100.0 * (1 - (r['rank'] - 1) / max(n_cands, 1)), 1)
         res.append(Candidate(
             supplier_name=r['inn'],  # временно: название подставит обогащение по ИНН
             supplier_inn=r['inn'],
             score=score,
             status=r['status'],
-            reasons=[f"Вероятность победы по модели: {100 * r['p_win']:.0f}%"] + r['reasons'][:2],
+            reasons=[f"Соответствие лоту: {score:.0f} из 100; шанс победы среди {n_cands} кандидатов — {100 * r['p_win']:.1f}%"] + r['reasons'][:2],
             sources=[{'field': 'score', 'source': HISTORY_SOURCE, 'url': 'https://zakupki.gov.ru/', 'checked_at': checked_at}],
             explanation=r['explanation'] | {'place': int(r['rank']), 'of': n_cands},
         ))

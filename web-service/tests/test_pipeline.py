@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from models import Candidate
-from pipeline import read_csv, run_pipeline, safe_cell, validate_candidates
+from pipeline import lot_quality, read_csv, run_pipeline, safe_cell, sort_lots, validate_candidates
 
 
 class PipelineTests(unittest.TestCase):
@@ -145,6 +145,23 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['stats']['items'],1)
         self.assertEqual(result['stats']['skipped_items'],1)
         self.assertTrue(any('без названия' in w for w in result['warnings']))
+
+    def test_lot_quality_and_sorting(self):
+        # качество = 0,7 × среднее соответствие трёх лучших + 0,3 × доля компаний с данными из источников
+        strong = [{'score': 90, 'supplier_name': 'ООО А', 'supplier_inn': '1', 'enrichment_status': 'Обогащено'}] * 3
+        unknown = [{'score': 30, 'supplier_name': '2', 'supplier_inn': '2', 'enrichment_status': 'Нет данных в источниках'}] * 3
+        self.assertEqual(lot_quality(strong), {'value': 93, 'strength': 90, 'data': 100})
+        self.assertEqual(lot_quality(unknown), {'value': 21, 'strength': 30, 'data': 0})
+        self.assertEqual(lot_quality([])['value'], 0)
+        src = self.folder/'lots.part'
+        lines = [b'{"lot_id": "weak"}\n', b'{"lot_id": "best"}\n', b'{"lot_id": "mid"}\n']
+        src.write_bytes(b''.join(lines))
+        keys, offset = [], 0
+        for q, line in zip([10, 90, 50], lines):
+            keys.append((q, offset, len(line))); offset += len(line)
+        sort_lots(src, self.folder/'lots.jsonl', keys)
+        self.assertEqual([json.loads(l)['lot_id'] for l in (self.folder/'lots.jsonl').read_text().splitlines()], ['best', 'mid', 'weak'])
+        self.assertFalse(src.exists())
 
 
 if __name__ == '__main__':unittest.main()

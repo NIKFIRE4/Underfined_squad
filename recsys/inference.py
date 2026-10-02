@@ -50,7 +50,16 @@ class Recommender:
         self.snap = Snapshot.load(d / 'snapshot')
         self.backtest = sorted((Snapshot.load(p) for p in d.glob('snapshot_*') if (p / 'cutoff.txt').exists()),
                                key=lambda s: s.cutoff)
+        # шкала «Соответствие» 0–100 (scripts/calibrate_fit.py): процентиль оценки среди оценок реальных победителей
+        cal = d / 'fit_calibration.json'
+        self.fit_q = np.array(json.loads(cal.read_text(encoding='utf-8'))['winner_score_quantiles']) if cal.exists() else None
         self.lemm = Lemmatizer()
+
+    def fit(self, scores):
+        """Соответствие 0–100: доля реальных победителей с оценкой ниже. Не делится между кандидатами, как шанс победы."""
+        if self.fit_q is None:
+            return np.full(len(scores), np.nan)
+        return np.interp(np.asarray(scores, dtype=np.float64), self.fit_q, np.linspace(0, 100, len(self.fit_q)))
 
     def snapshot_for(self, lot):
         """Срез истории для лота: основной или, для лота из прошлого, бэктестовый без заглядывания в будущее."""
@@ -118,6 +127,7 @@ class Recommender:
         F = build_features(snap, b, cands)
         F['score'] = self.booster.predict(F[FEATURES], num_iteration=self.meta['best_iteration'])
         F['p_win'] = softmax_by_lot(F.lot_id, F.score, self.meta['temperature']) * self.meta['candidate_coverage']
+        F['fit'] = self.fit(F.score)
         top = F.sort_values('score', ascending=False).head(top_n).reset_index(drop=True)
         contrib = self.booster.predict(top[FEATURES], num_iteration=self.meta['best_iteration'], pred_contrib=True)
         ex = explain(top, contrib)
@@ -136,6 +146,7 @@ class Recommender:
         # честно объяснить, за счёт чего №1 выше №2.
         explanations = [{
             'p_win': round(float(top.at[i, 'p_win']), 4),
+            'fit': None if pd.isna(top.at[i, 'fit']) else round(float(top.at[i, 'fit']), 1),
             'score': round(float(top.at[i, 'score']), 4),
             'factors': [{
                 'feature': FEATURES[j], 'title': titles[FEATURES[j]], 'group': groups[FEATURES[j]],
@@ -144,7 +155,7 @@ class Recommender:
             } for j in usable],
         } for i in range(len(top))]
         top = top.merge(self.suppliers[['sid', 'inn']], on='sid', how='left')
-        res = pd.concat([top[['inn', 'score', 'p_win']], ex], axis=1)
+        res = pd.concat([top[['inn', 'score', 'p_win', 'fit']], ex], axis=1)
         res.insert(0, 'rank', np.arange(1, len(res) + 1))
         res['factors'] = factors
         res['explanation'] = explanations

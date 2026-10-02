@@ -1,6 +1,7 @@
 """Local MVP server. Python 3.10+, standard library only; binds to loopback."""
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -27,6 +28,35 @@ LOCK = threading.RLock()
 POOL = ThreadPoolExecutor(max_workers=1)
 UPLOAD_EXT = (".csv", ".xlsx")
 MAX_SOURCES = 4
+# Кэш результатов: те же файлы с тем же top_k, режимом и версией модели не пересчитываются
+CACHE_TTL = float(os.environ.get("CACHE_HOURS", "24")) * 3600
+CACHE_FILES = ("suppliers.csv", "lots.jsonl")
+CACHE_FIELDS = ("stats", "warnings", "preview", "formats", "detected")
+
+
+def code_version():
+    """Отпечаток кода и модели: после переобучения или правки конвейера кэш не используется."""
+    paths = [ROOT / "pipeline.py", ROOT / "inputs.py", *sorted((ROOT / "integrations").glob("*.py")),
+             *(ROOT.parent / "models" / n for n in ("meta.json", "ranker.txt", "fit_calibration.json"))]
+    return hashlib.sha256("|".join(f"{p.name}:{p.stat().st_mtime_ns}" for p in paths if p.exists()).encode()).hexdigest()[:16]
+
+
+def cache_key(job):
+    files = job["files"]
+    if any("sha256" not in f for f in files.values()):
+        return None
+    # тип файла с автоопределением задаёт содержимое, а не порядок загрузки
+    hashes = sorted(f["sha256"] if k.startswith("src-") else f"{k}:{f['sha256']}" for k, f in files.items())
+    raw = json.dumps([hashes, job["top_k"], job["mode"], code_version()])
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def cached_job(key, exclude):
+    """Последняя завершённая задача с тем же ключом, не старше CACHE_TTL и с файлами результата на диске."""
+    now = time.time()
+    found = [j for j in JOBS.values() if j["id"] != exclude and j.get("cache_key") == key and j["status"] == "completed"
+             and now - j.get("updated_at", 0) < CACHE_TTL and all((DATA / j["id"] / n).is_file() for n in CACHE_FILES)]
+    return max(found, key=lambda j: j.get("updated_at", 0), default=None)
 
 
 def update_job(job_id, **changes):
@@ -251,11 +281,21 @@ class Handler(BaseHTTPRequestHandler):
                 if job["status"] != "uploading" or not ready:
                     self.reply(409, {"error": "Загрузите файлы извещений и ТРУ; повторный запуск задачи недоступен"})
                     return
-                if any(j["status"] in {"queued", "processing"} for j in JOBS.values()):
+                key = cache_key(job)
+                source = cached_job(key, job_id) if key and CACHE_TTL > 0 else None
+                if not source and any(j["status"] in {"queued", "processing"} for j in JOBS.values()):
                     self.reply(409, {"error": "Сервер обрабатывает другую задачу. Повторите запуск после её завершения."})
                     return
-                update_job(job_id, status="queued", message="Начинаем обработку…")
-                POOL.submit(worker, job_id)
+                if source:
+                    for name in CACHE_FILES:
+                        shutil.copyfile(DATA / source["id"] / name, DATA / job_id / name)
+                    when = time.strftime("%d.%m %H:%M", time.localtime(source.get("updated_at", 0)))
+                    update_job(job_id, cache_key=key, cached_from=source["id"], status="completed", stage="completed", progress=100,
+                               message=f"Готово: эти файлы уже обрабатывались {when}, результат взят из кэша",
+                               **{f: source[f] for f in CACHE_FIELDS if f in source})
+                else:
+                    update_job(job_id, cache_key=key, status="queued", message="Начинаем обработку…")
+                    POOL.submit(worker, job_id)
             self.reply(202, {"id": job_id})
         except analysis.AnalysisError as exc:
             self.reply(exc.status, {"error": str(exc)})
@@ -303,17 +343,19 @@ class Handler(BaseHTTPRequestHandler):
                 stream = marker.open("xb")
             self.connection.settimeout(120)
             remaining = size
+            digest = hashlib.sha256()
             with stream:
                 while remaining:
                     chunk = self.rfile.read(min(1024*1024, remaining))
                     if not chunk:
                         raise ValueError("Загрузка прервана. Создайте новую загрузку.")
                     stream.write(chunk)
+                    digest.update(chunk)
                     remaining -= len(chunk)
             marker.replace(DATA / job_id / f"{kind}{ext}")
             with LOCK:
                 files = dict(JOBS[job_id]["files"])
-                files[kind] = {"name": filename[:240], "bytes": size, "ext": ext}
+                files[kind] = {"name": filename[:240], "bytes": size, "ext": ext, "sha256": digest.hexdigest()}
                 update_job(job_id, files=files)
             self.reply(200, {"ok": True})
         except (ValueError, OSError) as exc:

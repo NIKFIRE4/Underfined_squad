@@ -101,6 +101,33 @@ def validate_candidates(candidates, mode):
     return sorted(result, key=lambda c: c.score, reverse=True)
 
 
+def lot_quality(verified: list) -> dict:
+    """Качество подбора по лоту 0–100: насколько сильны лучшие кандидаты и сколько о них известно.
+
+    strength — среднее «Соответствие» (score) трёх лучших компаний с историей;
+    data — доля компаний списка, по которым в открытых источниках нашлись название и карточка.
+    Лоты в результате идут по убыванию: сначала те, где подбор надёжнее и данных больше.
+    """
+    if not verified:
+        return {"value": 0, "strength": 0, "data": 0}
+    top = [c["score"] for c in verified[:3]]
+    strength = sum(top) / len(top)
+    known = sum(1 for c in verified if c["supplier_name"] != c["supplier_inn"]
+                and not str(c.get("enrichment_status") or "").startswith(("Нет данных", "Источник недоступен")))
+    data = 100 * known / len(verified)
+    return {"value": round(0.7 * strength + 0.3 * data), "strength": round(strength), "data": round(data)}
+
+
+def sort_lots(src: Path, dst: Path, keys: list):
+    """lots.part → lots.jsonl по убыванию качества; строки читаются по смещениям, весь файл в память не грузится."""
+    order = sorted(range(len(keys)), key=lambda i: (-keys[i][0], i))
+    with src.open("rb") as f, dst.open("wb") as out:
+        for i in order:
+            f.seek(keys[i][1])
+            out.write(f.read(keys[i][2]))
+    src.unlink()
+
+
 def run_pipeline(folder: Path, mode: str, top_k: int, update):
     warnings = []
     stats = {"notices": 0, "items": 0, "lots": 0, "recommendations": 0, "verified": 0, "unverified": 0, "without_items": 0, "without_candidates": 0, "enrichment_errors": 0, "skipped_items": 0}
@@ -141,7 +168,8 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
         if stats["skipped_items"]:
             warnings.append(f'Пропущено строк ТРУ без названия и кода ОКПД2: {stats["skipped_items"]}. Остальные позиции включены в подбор.')
         update(progress=43, message="Файлы проверены", stats=dict(stats), warnings=warnings)
-        with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f, (folder / "lots.part").open("w", encoding="utf-8") as lots_out:
+        lot_keys = []  # (качество, смещение, длина) строк lots.part — для сортировки лотов
+        with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f, (folder / "lots.part").open("wb") as lots_out:
             writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS, delimiter=";")
             writer.writeheader()
             cursor = db.execute("SELECT n.lot_id,n.data FROM notices n WHERE EXISTS (SELECT 1 FROM items i WHERE i.lot_id=n.lot_id) ORDER BY n.rowid")
@@ -185,7 +213,10 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                         writer.writerow({k: safe_cell(v) for k, v in exported.items()})
                         stats["recommendations"] += 1
                         stats[group] += 1
-                lots_out.write(json.dumps(card, ensure_ascii=False) + "\n")
+                card["quality"] = lot_quality(card["verified"])
+                line = (json.dumps(card, ensure_ascii=False) + "\n").encode("utf-8")
+                lot_keys.append((card["quality"]["value"], lots_out.tell(), len(line)))
+                lots_out.write(line)
         if mode == "live" and not getattr(enricher, "READY", False):
             warnings.append("Обогащение не подключено: вместо названий показаны ИНН, новые компании из реестров не искались.")
         if stats["enrichment_errors"]:
@@ -194,5 +225,5 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f'Для {stats["without_candidates"]} лотов кандидаты не найдены.')
         update(stage="export", progress=97, message="Сохраняем файл «Поставщики»…")
         (folder / "result.part").replace(folder / "suppliers.csv")
-        (folder / "lots.part").replace(folder / "lots.jsonl")
+        sort_lots(folder / "lots.part", folder / "lots.jsonl", lot_keys)
         update(status="completed", stage="completed", progress=100, message="Файл «Поставщики» готов", stats=stats, warnings=warnings, preview=preview, formats=formats)

@@ -303,6 +303,11 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .lot-btn[aria-current="true"] { background: var(--blue); color: #fff; box-shadow: 0 12px 28px -14px rgba(28, 79, 232, .9); }
 .lot-btn[aria-current="true"] .lot-id { color: rgba(255,255,255,.72); }
 .lot-btn[aria-current="true"] .lot-count { background: rgba(255,255,255,.2); color: #fff; }
+/* Качество подбора лота: чем выше, тем насыщеннее синий; слабые лоты — нейтральные */
+.lot-quality[data-tone="high"] { background: var(--blue); color: #fff; }
+.lot-quality[data-tone="mid"] { background: var(--blue-100); color: var(--blue-deep); }
+.lot-quality[data-tone="low"] { background: var(--soft); color: var(--ink-3); }
+.lot-btn[aria-current="true"] .lot-quality[data-tone="high"] { background: #fff; color: var(--blue); }
 .lots-more { margin: 8px auto 4px; display: flex; }
 .lots-empty { padding: 20px 0; font-size: 14px; color: var(--ink-3); }
 
@@ -346,6 +351,9 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .score small { font-size: 12.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .meter { height: 3px; border-radius: 2px; background: var(--blue-100); overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: inherit; background: var(--blue); }
+.score[data-tone="mid"] .meter > span { background: var(--blue-bright); }
+.score[data-tone="low"] .meter > span { background: var(--ink-3); }
+.score[data-tone="low"] b { color: var(--ink-2); }
 
 .chip { display: inline-flex; align-items: center; justify-self: start; max-width: 100%; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: var(--soft); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip[data-tone="ok"] { background: var(--ok-bg); color: var(--ok); }

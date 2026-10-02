@@ -150,5 +150,25 @@ class ApiTests(unittest.TestCase):
         with patch('server.MAX_FILE',2):
             self.assertEqual(self.call(f'/api/jobs/{job}/files/notices','PUT',b'abc',{'X-Filename':'a.csv'})[0],400)
 
+    def test_same_files_served_from_cache(self):
+        def run():
+            job=self.create()
+            for kind in ['notices','items']:
+                self.call(f'/api/jobs/{job}/files/{kind}','PUT',(server.ROOT/'examples'/f'{kind}.csv').read_bytes(),{'X-Filename':f'{kind}.csv'})
+            self.assertEqual(self.call(f'/api/jobs/{job}/start','POST',b'')[0],202)
+            return self.wait(job)
+        with patch('server.CACHE_TTL',0):  # те же примеры уже обрабатывали другие тесты класса
+            first=run()
+        self.assertEqual(first['status'],'completed',first)
+        self.assertNotIn('cached_from',first)
+        second=run()
+        self.assertEqual(second['status'],'completed',second)
+        self.assertEqual(second['cached_from'],first['id'])
+        self.assertEqual(second['stats'],first['stats'])
+        self.assertEqual(self.call(f'/api/jobs/{second["id"]}/lots')[0],200)
+        self.assertEqual(self.call(f'/api/jobs/{second["id"]}/download')[1],self.call(f'/api/jobs/{first["id"]}/download')[1])
+        with patch('server.CACHE_TTL',0):
+            self.assertNotIn('cached_from',run())
+
 
 if __name__ == '__main__':unittest.main()
