@@ -21,6 +21,13 @@ NO_TAXES_REVENUE = 10_000_000  # выручка, при которой нуле�
 
 ACTIVE_STATUSES = {"действующая организация", "действующий"}
 
+# Сведения за годы раньше этого в карточку не попадают: на 2026 год они уже не описывают компанию.
+MIN_INFO_YEAR = 2024
+FINANCE_FIELDS = ("revenue", "revenue_prev", "net_profit", "equity", "assets", "finance_year")
+# поле (или группа полей) из выгрузки ФНС → поле с датой, на которую выгрузка составлена
+DATED_FIELDS = {("employees",): "employees_as_of", ("taxes_paid", "taxes_paid_detail"): "taxes_paid_as_of",
+                ("tax_arrears_total", "tax_arrears"): "tax_arrears_as_of", ("tax_fines_total",): "tax_fines_as_of"}
+
 # Поля, расхождение которых между источниками стоит показать в карточке.
 COMPARABLE = {"ogrn", "kpp", "reg_date", "okved_main", "smp_category", "status", "region_code"}
 
@@ -135,12 +142,44 @@ def risk_flags(c: dict) -> list[dict]:
     return flags
 
 
+def _year(v: Any) -> int | None:
+    try:
+        return int(str(v)[:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def drop_stale(c: dict) -> None:
+    """Убирает сведения за годы до MIN_INFO_YEAR: отчётность, выгрузки ФНС, годы в finance_by_year."""
+    if isinstance(by_year := c.get("finance_by_year"), dict):
+        c["finance_by_year"] = {y: v for y, v in by_year.items() if (_year(y) or 0) >= MIN_INFO_YEAR} or None
+    fy = _year(c.get("finance_year"))
+    if fy is not None and fy < MIN_INFO_YEAR:
+        for k in FINANCE_FIELDS:
+            c[k] = None
+    elif fy == MIN_INFO_YEAR:
+        c["revenue_prev"] = None  # это выручка за предыдущий, слишком старый год
+    ty = _year(c.get("finance_tax_year"))
+    if ty is not None and ty < MIN_INFO_YEAR:
+        c["revenue_tax"] = c["finance_tax_year"] = c["finance_tax_by_year"] = None
+    for fields, as_of in DATED_FIELDS.items():
+        y = _year(c.get(as_of))
+        if y is not None and y < MIN_INFO_YEAR:
+            for k in (*fields, as_of):
+                c[k] = None
+
+
 def build_company(inn: str, facts: list[Fact], runs: dict[str, str]) -> tuple[dict, dict]:
     """Возвращает (строка витрины companies, карточка с источниками по полям)."""
     card = resolve(facts)
     c: dict[str, Any] = {k: v["value"] for k, v in card.items()}
     c["inn"] = inn
     c["kind"] = inn_kind(inn)
+    drop_stale(c)
+    for k in [k for k in card if c.get(k) is None and card[k]["value"] is not None]:
+        del card[k]  # устаревшее не показываем и в разборе по источникам
+    if "finance_by_year" in card:
+        card["finance_by_year"]["value"] = c["finance_by_year"]
 
     # фолбэки между источниками
     if c.get("employees") is None:

@@ -196,6 +196,25 @@ def test_card_risk_flags_and_priority():
     assert row["enrichment_status"] == "partial"
 
 
+def test_card_drops_info_before_2024():
+    fs = [
+        _fact("revenue", 7_000_000, "bo"), _fact("net_profit", 1, "bo"), _fact("finance_year", 2022, "bo"),
+        _fact("finance_by_year", {"2022": {"revenue": 7_000_000}, "2021": {"revenue": 1}}, "bo"),
+        _fact("employees", 12.0, "fns_sshr2019"), _fact("employees_as_of", "2023-12-31", "fns_sshr2019"),
+        _fact("taxes_paid", 5.0, "fns_paytax"), _fact("taxes_paid_as_of", "2025-12-31", "fns_paytax"),
+    ]
+    row, fields = card.build_company("7804428656", fs, {"bo": "ok"})
+    assert row["revenue"] is None and row["finance_year"] is None and row["employees"] is None
+    assert not {"revenue", "employees", "finance_by_year"} & set(fields)
+    assert row["taxes_paid"] == 5.0  # данные за 2025 остаются
+
+    fs = [_fact("revenue", 3, "bo"), _fact("revenue_prev", 2, "bo"), _fact("finance_year", 2024, "bo"),
+          _fact("finance_by_year", {"2024": {"revenue": 3}, "2023": {"revenue": 2}}, "bo")]
+    row, fields = card.build_company("7804428656", fs, {"bo": "ok"})
+    assert (row["revenue"], row["revenue_prev"]) == (3, None)
+    assert fields["finance_by_year"]["value"] == {"2024": {"revenue": 3}}
+
+
 def test_card_region_from_kpp():
     row, _ = card.build_company("7707049388", [_fact("kpp", "784201001", "egrul")], {"egrul": "ok"})
     assert row["region_code"] == "78"

@@ -48,52 +48,58 @@ class EnricherTests(unittest.TestCase):
 
 
 class NewPoolTests(unittest.TestCase):
-    """Вкладка «Непроверенные»: пул новых компаний из parquet (integrations/new_pool.py)."""
+    """Вкладка «Непроверенные»: пул новых компаний из базы (integrations/new_pool.py), таблицы подменены."""
 
     def setUp(self):
-        import tempfile
-        from pathlib import Path
         import pandas as pd
         from integrations import new_pool
         self.new_pool = new_pool
-        self.tmp = tempfile.TemporaryDirectory()
-        d = Path(self.tmp.name)
-        rows = [  # inn, группа, доказательство, уровень, приоритет
-            ("7701000001", "28.93", "контракты 28.93 (26)", "B", 9.0),        # сильное, Москва
-            ("7801000002", "28.93", "контракты 28.93 (1); ОКВЭД 47.79", "A", 4.0),  # сильное, СПб
-            ("7801000003", "28.93", "ОКВЭД 59.1 (осн.)", "A", 8.0),           # только ассоциация по ОКВЭД
-            ("4701000004", "28.93", "ОКВЭД 28.93 (осн.)", "C", 3.0),          # основной ОКВЭД = группа, ЛО
-            ("7801000005", "21.20", "контракты 21.20 (5)", "A", 9.9),         # другая группа
+        rows = [  # inn, группа, доказательство, уровень пула, приоритет
+            ("7801000001", "28.93", "контракты 28.93 (26)", "active", 9.0),             # сильное
+            ("7801000002", "28.93", "контракты 28.93 (1); ОКВЭД 47.79", "strong", 4.0),  # сильное
+            ("7801000003", "28.93", "ОКВЭД 59.1 (осн.)", "strong", 8.0),                 # только ассоциация по ОКВЭД
+            ("4701000004", "28.93", "ОКВЭД 28.93 (осн.)", "signal", 3.0),                # основной ОКВЭД = группа, ЛО
+            ("7801000005", "21.20", "контракты 21.20 (5)", "strong", 9.9),               # другая группа
         ]
-        pd.DataFrame(rows, columns=["inn", "okpd2_group", "evidence", "tier", "priority"]).to_parquet(d / "new_counterparties_groups.parquet")
-        pd.DataFrame([{"inn": r[0], "name": f"ООО Н{r[0][-1]}", "name_short": None, "region": r[0][:2], "is_msp": int(r[0] != "4701000004"),
-                       "role": "производитель (по реестру)", "role_evidence": "", "tier": r[3], "mos_source": "Портал поставщиков",
-                       "registry_sources": None, "registry_source_date": None, "msp_source": None, "msp_source_date": None,
-                       "retrieved_at": pd.Timestamp("2026-10-01")} for r in rows]).to_parquet(d / "new_counterparties.parquet")
-        self.patches = [patch.object(new_pool, "POOL_DIR", d), patch.object(new_pool, "_pool", None)]
+        groups = pd.DataFrame(rows, columns=["inn", "okpd2_group", "evidence", "tier", "priority"])
+        companies = pd.DataFrame([{"inn": r[0], "name": f"ООО Н{r[0][-1]}", "name_short": None, "region": r[0][:2],
+                                   "is_msp": r[0] != "4701000004", "role": "производитель (по реестру)", "role_evidence": "",
+                                   "tier": r[3], "pool_reason": "налоги за 2025 г.: 1 000 ₽", "mos_source": "Портал поставщиков",
+                                   "registry_sources": None, "registry_source_date": None,
+                                   "msp_source": "ФНС: Единый реестр МСП", "msp_source_date": pd.Timestamp("2026-09-10")}
+                                  for r in rows])
+        self.patches = [patch.object(new_pool, "_tables", return_value=(groups, companies)),
+                        patch.object(new_pool, "_pool", None)]
         for p in self.patches:
             p.start()
 
     def tearDown(self):
         for p in self.patches:
             p.stop()
-        self.tmp.cleanup()
 
     def lot(self, smp="false", code="28.93.15.110"):
         return Lot("1", {"subject": "Мясорубка", "is_smp": smp}, [{"product_name": "Мясорубка", "okpd2_code": code}])
 
-    def test_order_by_evidence_then_region(self):
+    def test_order_by_evidence_then_priority(self):
         out = self.new_pool.find(self.lot(), enricher.REGIONS, exclude=set())
-        # сильное из СПб/ЛО → сильное из других регионов → только ОКВЭД, хотя у последнего уровень A и приоритет выше
-        self.assertEqual([c.supplier_inn for c in out], ["7801000002", "4701000004", "7701000001", "7801000003"])
-        first = out[0]
-        self.assertTrue(first.is_new)
-        self.assertEqual((first.status, first.role, first.region, first.score), ("Новый в пуле", "Производитель", "Санкт-Петербург", 75.0))
-        self.assertEqual(first.reasons[0], "1 госконтракт по группе ОКПД2 28.93 на Портале поставщиков")
+        # сильное доказательство по группе → только ОКВЭД, хотя у последнего приоритет выше; внутри — приоритет
+        self.assertEqual([c.supplier_inn for c in out], ["7801000001", "7801000002", "4701000004", "7801000003"])
+        second = out[1]
+        self.assertTrue(second.is_new)
+        self.assertEqual((second.supplier_name, second.status, second.role, second.region),
+                         ("ООО Н2", "Новый в пуле", "Производитель", "Санкт-Петербург"))
+        self.assertEqual(second.reasons[0], "1 госконтракт по группе ОКПД2 28.93 на Портале поставщиков")
+        self.assertIn("Налоги за 2025 г.: 1 000 ₽", second.reasons)
+        self.assertEqual([s["field"] for s in second.sources], ["Госконтракты", "МСП"])
+        self.assertEqual(out[0].score, 75.0)
         self.assertTrue(all(c.score <= 75 for c in out))
 
+    def test_pool_unavailable_gives_empty_block(self):
+        with patch.object(self.new_pool, "_tables", side_effect=OSError("нет базы")):
+            self.assertEqual(self.new_pool.find(self.lot(), enricher.REGIONS, set()), [])
+
     def test_smp_only_lot_and_exclusions(self):
-        out = self.new_pool.find(self.lot(smp="true"), enricher.REGIONS, exclude={"7701000001"})
+        out = self.new_pool.find(self.lot(smp="true"), enricher.REGIONS, exclude={"7801000001"})
         self.assertEqual([c.supplier_inn for c in out], ["7801000002", "7801000003"])  # не МСП и уже в списке модели — нет
 
     def test_lot_without_codes_skips_pool(self):

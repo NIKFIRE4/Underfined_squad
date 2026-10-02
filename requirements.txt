@@ -10,3 +10,4 @@ pymorphy3-dicts-ru
 matplotlib==3.10.1
 ipykernel
 nbformat
+psycopg2-binary==2.9.11  # web-service: пул «Непроверенных» из PostgreSQL

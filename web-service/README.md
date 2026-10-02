@@ -67,7 +67,7 @@ python3 server.py
 
 - `integrations/recommender.py` — локальная модель и исторический индекс поставщиков.
 - `integrations/enricher.py` — обогащение кандидатов модели через API обогащения.
-- `integrations/new_pool.py` — новые компании для вкладки «Непроверенные» из пула `data/external/new_counterparties*.parquet`.
+- `integrations/new_pool.py` — новые компании для вкладки «Непроверенные» из таблиц `unverified_pool*` базы стенда (`scripts/build_unverified_pool.py`).
 - `models.py` — общие структуры `Lot` и `Candidate`.
 
 Оба адаптера подключены. Полный стенд — модель + обогащение + PostgreSQL:
