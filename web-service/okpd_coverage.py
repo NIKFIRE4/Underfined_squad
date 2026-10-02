@@ -21,12 +21,14 @@ def match_level(code, supplier_codes, classes):
 
 def compare_codes(items, supplier_codes):
     codes = list(dict.fromkeys(str(i.get('okpd2_code') or '').strip() for i in items))
+    # код, исправленный проверкой при загрузке (okpd_check), — с исходным из файла
+    original = {str(i.get('okpd2_code') or '').strip(): i['okpd2_original'] for i in items if i.get('okpd2_original')}
     classes = {c[:2] for c in supplier_codes or ()}
     rows = []
     for code in filter(None, codes):
         level, prefix = match_level(code, supplier_codes, classes) if supplier_codes is not None else (None, None)
         rows.append({'code': code, 'present': None if supplier_codes is None else level == 'точный',
-                     'match': level, 'match_code': prefix})
+                     'match': level, 'match_code': prefix, **({'original': original[code]} if code in original else {})})
     known = supplier_codes is not None
     return {'items': rows, 'total': len(rows),
             'matched': sum(r['present'] for r in rows) if known else None,

@@ -391,12 +391,19 @@ function renderLotDetail() {
     meta.length ? h('dl', {class: 'lot-meta'}, meta.map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v})))) : null,
   ];
 
+  if (lot.okpd2_fixed) {
+    // проверка при загрузке нашла несуществующие коды ОКПД2 и восстановила их (web-service/okpd_check.py)
+    children.push(h('div', {class: 'alert alert-fix', role: 'note'}, h('p', {},
+      h('strong', {text: `Исправлены коды ОКПД2: ${fmt(lot.okpd2_fixed)} из ${fmt(lot.items_total)} ${plural(lot.items_total, 'позиции', 'позиций', 'позиций')}. `}),
+      'В файле указаны коды, которых нет в классификаторе. Восстановили их по справочнику кодов истории закупок СПб и названию позиции — подбор шёл по исправленным кодам. Исходный код зачёркнут в списке позиций.')));
+  }
+
   if (lot.items?.length) {
     const rest = lot.items_total - lot.items.length;
-    children.push(h('details', {class: 'lot-items'},
+    children.push(h('details', {class: 'lot-items', open: lot.okpd2_fixed ? true : null},
       h('summary', {text: `Позиции ТРУ и коды ОКПД2 (${fmt(lot.items_total || lot.items.length)})`}),
       h('ul', {}, lot.items.map(i => h('li', {}, h('span', {text: i.name || 'Без названия'}), i.okpd2 ? h('code', {title: i.okpd2_original ? `ОКПД2 исправлен: в файле ${i.okpd2_original} — такого кода нет` : 'ОКПД2', text: i.okpd2}) : null,
-        i.okpd2_original ? h('small', {class: 'okpd-fixed', text: `в файле ${i.okpd2_original}`}) : null))),
+        i.okpd2_original ? h('small', {class: 'okpd-fixed', title: 'Почему исправлен: ' + (i.okpd2_fix_reason || 'кода нет в классификаторе'), text: `в файле ${i.okpd2_original}`}) : null))),
       rest > 0 ? h('p', {class: 'more', text: `Ещё ${fmt(rest)} — в выгрузке CSV.`}) : null));
   }
 
@@ -660,7 +667,7 @@ async function loadOkpdCoverage(c, lot, box) {
     count.textContent = data.available ? `${data.matched} из ${data.total}` + (data.partial ? ` · частично ${data.partial}` : '') : `— из ${data.total}`;
     content.replaceChildren(
       h('ul', {class: 'okpd-list'}, data.items.map(item => h('li', {'data-state': okpdState(item)},
-        h('span', {class: 'okpd-code', text: item.code}),
+        h('span', {class: 'okpd-code'}, item.code, item.original ? h('small', {class: 'okpd-fixed', title: 'Код исправлен при загрузке: в файле такого кода нет', text: ` в файле ${item.original}`}) : null),
         h('span', {text: okpdLabel(item)})))),
       h('p', {class: 'okpd-note', text: !data.total ? 'В позициях лота коды ОКПД2 не указаны.' : data.available
         ? 'Сверка с историей побед и участий поставщика в закупках СПб (выгрузка организаторов 2024–2025). Частичное совпадение — общий вид, подгруппа, группа или класс ОКПД2. Отсутствие кода не означает, что поставщик не может поставить товар.'

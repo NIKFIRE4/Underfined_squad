@@ -215,7 +215,9 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                 card = {"lot_id": lot_id, "subject": lot.notice["subject"], "start_price": lot.notice.get("start_price", ""),
                         "is_smp": lot.notice.get("is_smp", ""), "items_total": len(lot.items),
                         "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", ""),
-                                   **({"okpd2_original": i["okpd2_original"]} if i.get("okpd2_original") else {})} for i in lot.items[:30]]}
+                                   **({"okpd2_original": i["okpd2_original"], "okpd2_fix_reason": i.get("okpd2_fix_reason", "")}
+                                      if i.get("okpd2_original") else {})} for i in lot.items[:30]],
+                        "okpd2_fixed": sum(1 for i in lot.items if i.get("okpd2_original"))}
                 for group, chosen in groups.items():
                     card[group] = []
                     for rank, candidate in enumerate(chosen, 1):

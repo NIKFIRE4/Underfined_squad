@@ -89,6 +89,7 @@ def fix_item(row: dict) -> dict | None:
         return None
     row["okpd2_original"] = normalize(original)
     row["okpd2_code"] = fixed
+    row["okpd2_fix_reason"] = why
     return {"from": row["okpd2_original"], "to": fixed, "name": row.get("product_name", ""), "why": why}
 
 
