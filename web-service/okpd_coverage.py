@@ -1,16 +1,37 @@
-"""Точное совпадение кодов лота с сохранённой историей поставщика в модели."""
+"""Точное и частичное (по уровням ОКПД2) совпадение кодов лота с сохранённой историей поставщика в модели."""
 import json
 import sqlite3
 from contextlib import closing
 
 
+# Уровни ОКПД2 от точного к общему: длина префикса кода XX.XX.XX.XXX и название уровня
+LEVELS = [(8, 'вид'), (7, 'подгруппа'), (5, 'группа'), (2, 'класс')]
+
+
+def match_level(code, supplier_codes, classes):
+    """Самый глубокий общий уровень кода лота с историей поставщика: (уровень, код уровня) или (None, None)."""
+    if code in supplier_codes:
+        return 'точный', code
+    for size, level in LEVELS:
+        prefix = code[:size]
+        if len(prefix) < len(code) and (prefix in classes if size == 2 else prefix in supplier_codes):
+            return level, prefix
+    return None, None
+
+
 def compare_codes(items, supplier_codes):
     codes = list(dict.fromkeys(str(i.get('okpd2_code') or '').strip() for i in items))
-    rows = [{'code': code, 'present': None if supplier_codes is None else code in supplier_codes}
-            for code in codes if code]
+    classes = {c[:2] for c in supplier_codes or ()}
+    rows = []
+    for code in filter(None, codes):
+        level, prefix = match_level(code, supplier_codes, classes) if supplier_codes is not None else (None, None)
+        rows.append({'code': code, 'present': None if supplier_codes is None else level == 'точный',
+                     'match': level, 'match_code': prefix})
+    known = supplier_codes is not None
     return {'items': rows, 'total': len(rows),
-            'matched': None if supplier_codes is None else sum(r['present'] for r in rows),
-            'available': supplier_codes is not None}
+            'matched': sum(r['present'] for r in rows) if known else None,
+            'partial': sum(r['match'] not in (None, 'точный') for r in rows) if known else None,
+            'available': known}
 
 
 def coverage(folder, lot_id, inn, mode):

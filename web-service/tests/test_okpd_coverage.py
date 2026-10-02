@@ -39,3 +39,17 @@ class CoverageTests(unittest.TestCase):
             self.assertFalse(result['available'])
             with self.assertRaises(LookupError):
                 coverage(folder, '1', '0123456789', 'demo')
+
+
+class PartialMatchTests(unittest.TestCase):
+    def test_deepest_common_level(self):
+        profile = {'32.50', '32.50.1', '32.50.13', '32.50.13.110', '17.12'}
+        items = [{'okpd2_code': c} for c in ['32.50.13.110', '32.50.13.190', '32.50.21.000', '17.12.14.000', '17.29.11.000', '99.99.99.999']]
+        result = compare_codes(items, profile)
+        self.assertEqual([(r['match'], r['match_code']) for r in result['items']],
+                         [('точный', '32.50.13.110'), ('вид', '32.50.13'), ('группа', '32.50'), ('группа', '17.12'), ('класс', '17'), (None, None)])
+        self.assertEqual((result['matched'], result['partial']), (1, 4))
+
+    def test_short_lot_code_is_not_partial_of_itself(self):
+        result = compare_codes([{'okpd2_code': '32.50'}], {'32.50.1'})
+        self.assertEqual(result['items'][0]['match'], 'класс')

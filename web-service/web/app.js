@@ -342,14 +342,10 @@ function renderLots() {
     h('button', {class: 'lot-btn', type: 'button', 'data-lot': lot.lot_id, 'aria-current': lot.lot_id === state.lotId ? 'true' : 'false', onclick: () => selectLot(lot.lot_id)},
       h('span', {class: 'lot-id', text: 'Лот ' + lot.lot_id}),
       h('span', {class: 'lot-subject', text: lot.subject}),
-      lot.quality && state.group === 'verified'
-        ? h('span', {class: 'lot-count lot-quality', 'data-tone': fitTone(lot.quality.value), title: qualityTitle(lot.quality), text: String(lot.quality.value)})
-        : h('span', {class: 'lot-count', title: 'Поставщиков в списке', text: String(lot[state.group].length)})))) :
+      h('span', {class: 'lot-count', title: 'Поставщиков в списке', text: String(lot[state.group].length)})))) :
     [h('li', {class: 'lots-empty', text: state.query ? 'Ничего не найдено. Попробуйте номер лота, часть предмета или ИНН.' : 'Нет лотов с результатом.'})]));
   $('lots-more').hidden = !state.hasMore;
 }
-
-const qualityTitle = q => `Качество подбора ${q.value} из 100: оценка лучших компаний ${q.strength}, данные из открытых источников по ${q.data}% компаний. Лоты идут от лучших к худшим.`;
 
 function selectLot(lotId) {
   state.lotId = lotId;
@@ -379,7 +375,6 @@ function renderLotDetail() {
   if (price) meta.push(['НМЦК', price]);
   if (lot.is_smp !== undefined && lot.is_smp !== '') meta.push(['Только для МСП', yes(lot.is_smp) ? 'Да' : 'Нет']);
   if (lot.items_total) meta.push(['Позиций ТРУ', fmt(lot.items_total)]);
-  if (lot.quality) meta.push(['Качество подбора', `${lot.quality.value} из 100`]);
 
   const children = [
     h('div', {class: 'lot-toolbar'},
@@ -498,6 +493,48 @@ const extLink = (url, text) => {
   return h('span', {text});
 };
 
+/* ---------- Источники полей: квадратик со стрелкой рядом со значением ---------- */
+// Каждое значение карточки — с первоисточником и датой: видно, что сведения собраны из реестров, а не выдуманы
+const HISTORY_SOURCE = 'Выгрузка организаторов: закупки СПб 2024–2025 (АИС ГЗ и Электронный магазин)';
+function srcBtn(src) {
+  if (!src?.url) return null;
+  const title = `Источник: ${src.name}${src.date ? ', данные от ' + fmtDate(src.date) : ''}`;
+  try {
+    const u = new URL(src.url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return h('a', {class: 'src-link', href: u.href, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': title}, icon('external'));
+  } catch { return null; }
+}
+// field → {name, url, date}: код источника поля из card.fields, адрес для ручной проверки — из sources_status
+function sourceResolver(card) {
+  const byCode = Object.fromEntries((card.sources_status || []).map(s => [s.source, s]));
+  const eis = (card.links || []).find(l => /Контракты поставщика/.test(l.title))?.url;
+  return field => {
+    const f = card.fields?.[field];
+    if (!f?.source) return null;
+    if (f.source === 'history') return {name: HISTORY_SOURCE + ' — проверить в ЕИС', url: eis || byCode.history?.url, date: f.fetched_at};
+    const s = byCode[f.source];
+    return s ? {name: s.name, url: s.url, date: f.fetched_at} : null;
+  };
+}
+// Источник доказательства роли: ОКВЭД — реестр/ФНС, широта кодов — история закупок, продукция — реестры
+function roleEvidenceField(text) {
+  if (/ОКВЭД/i.test(text)) return 'okved_main';
+  if (/ГИСП|промышленн|719/i.test(text)) return 'in_gisp';
+  if (/программ|реестр.*ПО/i.test(text)) return 'in_software_registry';
+  if (/истори|заказчик|код|поставлял|лот/i.test(text)) return 'hist_okpd2_codes';
+  return null;
+}
+// Блок «Источники раздела»: все разные источники полей раздела
+function sectionSources(src, fields) {
+  const seen = new Map();
+  for (const f of fields) { const s = src(f); if (s?.url && !seen.has(s.name)) seen.set(s.name, s); }
+  if (!seen.size) return null;
+  return h('p', {class: 'section-sources'}, h('span', {text: 'Источники: '}),
+    [...seen.values()].map(s => h('span', {class: 'section-source'}, s.name, s.date ? ` · ${fmtDate(s.date)}` : '', srcBtn(s))));
+}
+const propRow = (k, v, src) => h('div', {}, h('dt', {text: k}), h('dd', {}, h('span', {text: v}), srcBtn(src)));
+
 function ring(score, label = 'из 100', text = fmtScore(score), aria = `Оценка модели ${fmtScore(score)} из 100`) {
   const r = 42, len = 2 * Math.PI * r, pct = Math.max(0, Math.min(100, score)) / 100;
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -599,6 +636,12 @@ function sheetIds(c) {
   return ids;
 }
 
+// Совпадение кода лота с историей поставщика: точное, частичное (общий уровень ОКПД2) или нет
+const OKPD_LEVEL = {'вид': 'вид', 'подгруппа': 'подгруппу', 'группа': 'группу', 'класс': 'класс'};
+const okpdState = i => i.present === null || i.present === undefined ? 'unknown' : i.present ? 'present' : i.match ? 'partial' : 'absent';
+const okpdLabel = i => i.present === null || i.present === undefined ? 'Нет данных' : i.present ? 'Точное совпадение'
+  : i.match ? `Частично: поставлял ${OKPD_LEVEL[i.match] || i.match} ${i.match_code}` : 'Нет в профиле';
+
 async function loadOkpdCoverage(c, lot, box) {
   const count = h('span', {class: 'okpd-count', text: '…'});
   const content = h('div', {}, h('p', {class: 'muted', text: 'Сверяем коды лота с профилем поставщика…'}));
@@ -611,13 +654,13 @@ async function loadOkpdCoverage(c, lot, box) {
   try {
     const data = await api(`/api/jobs/${state.jobId}/coverage?${new URLSearchParams({lot_id: lot.lot_id, inn: c.supplier_inn})}`);
     if (!box.isConnected) return;
-    count.textContent = data.available ? `${data.matched} из ${data.total}` : `— из ${data.total}`;
+    count.textContent = data.available ? `${data.matched} из ${data.total}` + (data.partial ? ` · частично ${data.partial}` : '') : `— из ${data.total}`;
     content.replaceChildren(
-      h('ul', {class: 'okpd-list'}, data.items.map(item => h('li', {'data-state': item.present === null ? 'unknown' : item.present ? 'present' : 'absent'},
+      h('ul', {class: 'okpd-list'}, data.items.map(item => h('li', {'data-state': okpdState(item)},
         h('span', {class: 'okpd-code', text: item.code}),
-        h('span', {text: item.present === null ? 'Нет данных' : item.present ? 'Есть в профиле' : 'Нет в профиле'})))),
+        h('span', {text: okpdLabel(item)})))),
       h('p', {class: 'okpd-note', text: !data.total ? 'В позициях лота коды ОКПД2 не указаны.' : data.available
-        ? 'Точное совпадение по истории закупок модели. Отсутствие кода в профиле не означает, что поставщик не может поставить товар.'
+        ? 'Сверка с историей побед и участий поставщика в закупках СПб (выгрузка организаторов 2024–2025). Частичное совпадение — общий вид, подгруппа, группа или класс ОКПД2. Отсутствие кода не означает, что поставщик не может поставить товар.'
         : 'В модели нет истории кодов этого поставщика — подтвердить наличие или отсутствие нельзя.'}));
   } catch {
     if (!box.isConnected) return;
@@ -625,6 +668,22 @@ async function loadOkpdCoverage(c, lot, box) {
     content.replaceChildren(h('p', {class: 'muted', text: 'Не удалось загрузить коды поставщика. '}),
       h('button', {class: 'link-btn', type: 'button', text: 'Повторить', onclick: () => { box.replaceChildren(); loadOkpdCoverage(c, lot, box); }}));
   }
+}
+
+// Сноска: откуда в выдаче сам поставщик (а не сведения о нём)
+function originNote(c) {
+  if (c.is_demo) return h('aside', {class: 'origin-note'}, h('strong', {text: 'Откуда в списке: '}), 'демо-компания, вымышлена для проверки интерфейса.');
+  const eis = c.supplier_inn ? {name: 'ЕИС: контракты поставщика', url: 'https://zakupki.gov.ru/epz/contract/search/results.html?searchString=' + encodeURIComponent(c.supplier_inn)} : null;
+  if (!c.is_new) {
+    return h('aside', {class: 'origin-note'}, h('strong', {text: 'Откуда в списке: '}),
+      'история закупок Санкт-Петербурга — ', h('span', {class: 'origin-src'}, HISTORY_SOURCE, srcBtn(eis)),
+      '. Компания участвовала или побеждала в закупках, модель отобрала её среди кандидатов лота по кодам ОКПД2, заказчику и описанию.');
+  }
+  const regs = (c.sources || []).filter(s => s && s.source && s.url);
+  return h('aside', {class: 'origin-note'}, h('strong', {text: 'Откуда в списке: '}),
+    'компании нет в истории закупок СПб — она найдена в открытых реестрах',
+    regs.length ? [': ', regs.map((s, i) => h('span', {class: 'origin-src'}, i ? '; ' : '', s.source, s.checked_at ? ` (${fmtDate(s.checked_at)})` : '', srcBtn({name: s.source, url: s.url, date: s.checked_at})))] : '',
+    '. Отобрана по группе ОКПД2 лота как действующая: в 2025 году платила налоги или имела сотрудников, не в РНП.');
 }
 
 function openSheet(c, lot, trigger) {
@@ -637,7 +696,7 @@ function openSheet(c, lot, trigger) {
     : ring(c.score, 'оценка', hasFit(c) ? fmtFit(c.score) : fmtScore(c.score)));
 
   const okpdBox = h('section', {class: 'sheet-section okpd-coverage', 'aria-live': 'polite'});
-  const sections = [okpdBox];
+  const sections = [originNote(c), okpdBox].filter(Boolean);
   if (verified && c.explanation?.factors?.length) {
     sections.push(explainSection(c, lot));
   } else if (verified) {
@@ -653,7 +712,8 @@ function openSheet(c, lot, trigger) {
   const smp = c.is_smp === null || c.is_smp === undefined ? 'Нет данных' : c.is_smp ? 'Да' : 'Нет';
   sections.push(h('section', {class: 'sheet-section'}, h('h3', {text: 'Характеристики'}),
     h('dl', {class: 'props'}, [['Роль', roleLabel(c)], ['Статус', c.status], ['Регион', c.region || 'Не указан'], ['Субъект МСП', smp], ['Обогащение', c.enrichment_status]]
-      .map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v || '—', ...(k === 'Роль' ? {'data-role-inn': c.supplier_inn} : {})}))))));
+      .map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {'data-prop': {'Роль': 'role', 'Субъект МСП': 'smp'}[k]},
+        h('span', {text: v || '—', ...(k === 'Роль' ? {'data-role-inn': c.supplier_inn} : {})})))))));
 
   sections.push(h('section', {class: 'sheet-section'}, h('h3', {text: 'Почему в списке'}),
     visibleReasons(c).length ? h('ul', {class: 'reasons'}, visibleReasons(c).map(r => h('li', {}, h('span', {class: 'tick'}, icon('check')), h('span', {text: r}))))
@@ -693,7 +753,7 @@ function sourceItem(s) {
 }
 
 function metricsGrid(entries, mode) {
-  return h('dl', {class: 'metrics' + (mode ? ' is-' + mode : '')}, entries.map(([label, value]) => h('div', {}, h('dt', {text: label}), h('dd', {text: value}))));
+  return h('dl', {class: 'metrics' + (mode ? ' is-' + mode : '')}, entries.map(([label, value, src]) => h('div', {}, h('dt', {text: label}), h('dd', {}, h('span', {text: value}), srcBtn(src)))));
 }
 
 const section = (title, ...body) => h('section', {class: 'sheet-section'}, h('h3', {text: title}), ...body);
@@ -740,6 +800,7 @@ function renderCompany(c, card, box) {
   if (co.region_name && !c.region) ids.append(h('span', {class: 'id-chip', text: co.region_name}));
 
   const parts = [];
+  const src = sourceResolver(card);
   const flags = card.risk_flags || [];
   const active = co.is_active === true ? ['ok', co.status || 'Действующая'] : co.is_active === false ? ['check', co.status || 'Недействующая'] : ['check', 'Статус не подтверждён'];
   const role = card.role || {};
@@ -748,31 +809,46 @@ function renderCompany(c, card, box) {
   const okved = co.okved_main ? [co.okved_main, co.okved_main_name].filter(Boolean).join(' — ') : '';
   const regimes = (co.tax_regimes || []).map(r => TAX_REGIMES[r] || r.toUpperCase()).join(', ');
   const smp = co.is_smp === true ? (co.smp_category ? ['микро', 'малое', 'среднее'][co.smp_category - 1] + ' предприятие' : 'Да') : co.is_smp === false ? 'Нет' : '';
+  const hasRole = role.value && role.value !== 'unknown';
+  // Роль: доказательства с первоисточником каждого
+  const roleProof = hasRole && role.evidence?.length ? h('div', {class: 'role-proof'},
+    h('p', {class: 'role-proof-title'}, `Почему «${role.label}»`, role.confidence ? h('small', {text: ` · уверенность ${{high: 'высокая', medium: 'средняя', low: 'низкая'}[role.confidence] || role.confidence}`}) : null),
+    h('ul', {}, role.evidence.map(e => h('li', {}, h('span', {text: e}), srcBtn(src(roleEvidenceField(e))))))) : null;
+  const roleSrc = hasRole ? src(roleEvidenceField(role.evidence?.[0] || '') || 'okved_main') : null;
+  const about = [
+    ['Полное наименование', co.name_full, 'name_full'], ['ОГРН', co.ogrn, 'ogrn'], ['Руководитель', director, 'director'], ['Зарегистрирована', reg, 'reg_date'],
+    ['Основной ОКВЭД', okved, 'okved_main'], ['Субъект МСП', smp, 'is_smp'], ['Налоговый режим', regimes, 'tax_regimes'], ['Уставный капитал', fmtRub(co.charter_capital), 'charter_capital'],
+  ];
   parts.push(section('О компании',
     h('div', {class: 'company-tags'},
-      h('span', {class: 'chip', 'data-tone': active[0], text: active[1]}),
-      role.value && role.value !== 'unknown' ? h('span', {class: 'chip', 'data-tone': 'new', title: (role.evidence || []).join('\n'), text: role.label}) : null,
-      co.in_rnp ? h('span', {class: 'chip', 'data-tone': 'danger', text: 'В реестре недобросовестных'}) : null),
-    h('dl', {class: 'props'}, pairs([
-      ['Полное наименование', co.name_full], ['ОГРН', co.ogrn], ['Руководитель', director], ['Зарегистрирована', reg],
-      ['Основной ОКВЭД', okved], ['Субъект МСП', smp], ['Налоговый режим', regimes], ['Уставный капитал', fmtRub(co.charter_capital)],
-    ]).map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v})))),
-    co.address ? h('dl', {class: 'props props-wide'}, h('div', {}, h('dt', {text: 'Адрес'}), h('dd', {text: co.address}))) : null));
+      h('span', {class: 'chip-src'}, h('span', {class: 'chip', 'data-tone': active[0], text: active[1]}), srcBtn(src('status'))),
+      hasRole ? h('span', {class: 'chip-src'}, h('span', {class: 'chip', 'data-tone': 'new', title: (role.evidence || []).join('\n'), text: role.label}), srcBtn(roleSrc)) : null,
+      co.in_rnp ? h('span', {class: 'chip-src'}, h('span', {class: 'chip', 'data-tone': 'danger', text: 'В реестре недобросовестных'}), srcBtn(src('in_rnp'))) : null),
+    roleProof,
+    h('dl', {class: 'props'}, pairs(about).map(([k, v, f]) => propRow(k, v, src(f)))),
+    co.address ? h('dl', {class: 'props props-wide'}, propRow('Адрес', co.address, src('address'))) : null,
+    sectionSources(src, [...about.map(a => a[2]), 'status', 'address'])));
+  // Те же ссылки — у роли и МСП в «Характеристиках» над карточкой
+  for (const [prop, s2] of [['role', roleSrc], ['smp', src('is_smp')]]) {
+    const dd = $('sheet-body').querySelector(`[data-prop="${prop}"]`);
+    if (dd && s2 && !dd.querySelector('.src-link')) dd.append(srcBtn(s2));
+  }
 
   const year = co.finance_year ? ` за ${co.finance_year}` : '';
   const prev = co.revenue != null && co.revenue_prev ? Math.round((co.revenue / co.revenue_prev - 1) * 100) : null;
-  const finance = pairs([
-    ['Выручка' + year, fmtRub(co.revenue) + (prev != null && prev !== 0 ? ` (${prev > 0 ? '+' : '−'}${Math.abs(prev)}%)` : '')],
-    ['Чистая прибыль', fmtRub(co.net_profit)], ['Капитал', fmtRub(co.equity)],
-    ['Сотрудников', co.employees != null ? fmt(co.employees) : ''], ['Уплачено налогов' + (co.taxes_paid_year ? ` за ${co.taxes_paid_year}` : ''), fmtRub(co.taxes_paid)],
-    ['Недоимка', co.tax_arrears_total ? fmtRub(co.tax_arrears_total) : ''],
-  ]);
-  const history = pairs([
-    ['Участий в закупках', co.hist_lots != null ? fmt(co.hist_lots) : ''], ['Побед', co.hist_wins != null ? fmt(co.hist_wins) : ''],
-    ['Заказчиков', co.hist_customers != null ? fmt(co.hist_customers) : ''], ['Последняя закупка', co.hist_last_date ? fmtDate(co.hist_last_date) : ''],
-  ]);
-  if (finance.length) parts.push(section('Финансы', metricsGrid(finance)));
-  if (history.length && co.hist_lots) parts.push(section('Закупки СПб', metricsGrid(history)));
+  const financeRows = [
+    ['Выручка' + year, fmtRub(co.revenue) + (prev != null && prev !== 0 ? ` (${prev > 0 ? '+' : '−'}${Math.abs(prev)}%)` : ''), 'revenue'],
+    ['Чистая прибыль', fmtRub(co.net_profit), 'net_profit'], ['Капитал', fmtRub(co.equity), 'equity'],
+    ['Сотрудников', co.employees != null ? fmt(co.employees) : '', 'employees'], ['Уплачено налогов' + (co.taxes_paid_year ? ` за ${co.taxes_paid_year}` : ''), fmtRub(co.taxes_paid), 'taxes_paid'],
+    ['Недоимка', co.tax_arrears_total ? fmtRub(co.tax_arrears_total) : '', 'tax_arrears_total'],
+  ];
+  const historyRows = [
+    ['Участий в закупках', co.hist_lots != null ? fmt(co.hist_lots) : '', 'hist_lots'], ['Побед', co.hist_wins != null ? fmt(co.hist_wins) : '', 'hist_wins'],
+    ['Заказчиков', co.hist_customers != null ? fmt(co.hist_customers) : '', 'hist_customers'], ['Последняя закупка', co.hist_last_date ? fmtDate(co.hist_last_date) : '', 'hist_last_date'],
+  ];
+  const finance = pairs(financeRows), history = pairs(historyRows);
+  if (finance.length) parts.push(section('Финансы', metricsGrid(finance.map(([k, v, f]) => [k, v, src(f)])), sectionSources(src, finance.map(r => r[2]))));
+  if (history.length && co.hist_lots) parts.push(section('Закупки СПб', metricsGrid(history.map(([k, v, f]) => [k, v, src(f)])), sectionSources(src, history.map(r => r[2]))));
 
   parts.push(section('Риски', flags.length
     ? h('ul', {class: 'risks'}, flags.map(f => h('li', {text: f.text})))

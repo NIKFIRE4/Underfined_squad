@@ -310,11 +310,6 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .lot-btn[aria-current="true"] { background: var(--blue); color: #fff; box-shadow: 0 12px 28px -14px rgba(28, 79, 232, .9); }
 .lot-btn[aria-current="true"] .lot-id { color: rgba(255,255,255,.72); }
 .lot-btn[aria-current="true"] .lot-count { background: rgba(255,255,255,.2); color: #fff; }
-/* Качество подбора лота: чем выше, тем насыщеннее синий; слабые лоты — нейтральные */
-.lot-quality[data-tone="high"] { background: var(--blue); color: #fff; }
-.lot-quality[data-tone="mid"] { background: var(--blue-100); color: var(--blue-deep); }
-.lot-quality[data-tone="low"] { background: var(--soft); color: var(--ink-3); }
-.lot-btn[aria-current="true"] .lot-quality[data-tone="high"] { background: #fff; color: var(--blue); }
 .lots-more { margin: 8px auto 4px; display: flex; }
 .lots-empty { padding: 20px 0; font-size: 14px; color: var(--ink-3); }
 
@@ -420,6 +415,7 @@ body[data-view="upload"] main { padding-bottom: 12px; }
 .okpd-list { display: flex; flex-direction: column; gap: 8px; }
 .okpd-list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; padding: 10px 14px; border-radius: 10px; font-size: 13.5px; background: var(--soft); color: var(--ink-2); }
 .okpd-list li[data-state="present"] { background: var(--ok-bg); color: #096641; }
+.okpd-list li[data-state="partial"] { background: var(--warn-bg); color: var(--warn); }
 .okpd-list li[data-state="absent"] { background: var(--danger-bg); color: var(--danger); }
 .okpd-code { font-weight: 600; font-variant-numeric: tabular-nums; }
 .okpd-note { margin-top: 12px; font-size: 12.5px; color: var(--ink-2); }
@@ -568,3 +564,19 @@ body[data-view="upload"] main { padding-bottom: 12px; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .stepper li[data-state="current"] .step-dot { border-right-color: #fff; }
 }
+
+/* Источник поля: квадратик со стрелкой рядом со значением */
+.src-link { display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 6px; vertical-align: middle; position: relative; top: -1px; border-radius: 6px; border: 1px solid var(--blue-200); background: var(--blue-50); color: var(--blue); flex: none; transition: background .15s var(--ease), color .15s var(--ease); }
+.src-link .icon { width: 12px; height: 12px; }
+.src-link:hover { background: var(--blue); color: #fff; border-color: var(--blue); }
+.src-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.chip-src { display: inline-flex; align-items: center; }
+.section-sources { margin-top: 12px; font-size: 12.5px; color: var(--ink-3); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.section-source { display: inline-flex; align-items: center; color: var(--ink-2); }
+.role-proof { margin: 12px 0 4px; padding: 12px 14px; border-radius: 12px; background: var(--blue-50); }
+.role-proof-title { font-size: 13px; font-weight: 600; color: var(--blue-deep); margin: 0 0 6px; }
+.role-proof-title small { font-weight: 500; color: var(--ink-2); }
+.role-proof li { font-size: 13.5px; color: var(--ink-2); padding: 3px 0; }
+.origin-note { margin: 0 0 4px; padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--line-strong); background: var(--soft); font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+.origin-note strong { color: var(--ink); }
+.origin-src { display: inline; }
