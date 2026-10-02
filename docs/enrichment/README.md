@@ -91,20 +91,20 @@ docker compose run -d --name enr-egrul enrichment batch --missing-status --sourc
 
 Пока статус не проверен, адаптер ставит кандидату «Требует проверки» и не выдаёт его за действующего.
 
-**Готовый дамп базы (2026-10-01)** — чтобы не повторять многочасовой прогон:
-[disk.yandex.ru/d/KjhHtA1XTdFgCg](https://disk.yandex.ru/d/KjhHtA1XTdFgCg) · `enrichment.dump`, 80 МБ ·
-SHA-256 `04dcd98eb97282219297f47c0861cf313a9a1c904ce76b8d6692d91411fe5ba7`.
-Внутри: 44 174 компании, ~959 тыс. фактов, пул 479 513 МСП СПб/ЛО, реестры, история; ГИР БО — ~3,3 тыс. ИНН, РНП — ~3,8 тыс.
+**Готовый дамп базы (2026-10-02)** — чтобы не повторять многочасовой прогон:
+[disk.yandex.ru/d/cYwAuEFwbsIP3A](https://disk.yandex.ru/d/cYwAuEFwbsIP3A) · `enrichment_20261002.dump`, 123 МБ ·
+SHA-256 `db295870527987cfdf79d9a0854bf8ae78f119ead34c38ec3515b1d1f91f8dd4`.
+Внутри: 45 560 карточек компаний, 1,36 млн фактов; ГИР БО — 33 тыс. ИНН, статус у 92% и выручка у 89% юрлиц-поставщиков;
+контакты проверены у 10 тыс. ИНН (телефон найден у 6,4 тыс.); реестр РНП целиком (116 818 записей);
+«Непроверенные» для web-service: `unverified_suppliers` (148 003), `unverified_pool` (147 850) и `unverified_pool_groups` (1,14 млн связок с ОКПД2);
+пул МСП СПб/ЛО (479 513), реестры, история.
 Файл не в git: репозиторий публичный, а в дампе ФИО и ИНН руководителей и учредителей.
 
 ```bash
 # скачать (прямая ссылка через API Яндекс Диска), проверить и восстановить
-mkdir -p data && curl -L -o data/enrichment.dump "$(curl -s 'https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=https://disk.yandex.ru/d/KjhHtA1XTdFgCg' | python3 -c 'import sys,json;print(json.load(sys.stdin)["href"])')"
+mkdir -p data && curl -L -o data/enrichment.dump "$(curl -s 'https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=https://disk.yandex.ru/d/cYwAuEFwbsIP3A' | python3 -c 'import sys,json;print(json.load(sys.stdin)["href"])')"
 shasum -a 256 data/enrichment.dump      # должно совпасть с SHA-256 выше (Linux: sha256sum)
 docker compose up -d db && scripts/db_restore.sh data/enrichment.dump
-# затем догрузить поштучные источники — возьмут только необработанные ИНН:
-docker compose run -d --name enr-bo  enrichment batch --sources bo  --concurrency 2
-docker compose run -d --name enr-rnp enrichment batch --sources rnp --concurrency 2
 ```
 
 Новый дамп своей базы: `scripts/db_dump.sh` → `data/enrichment.dump` (выкладывать в облако, не в git).
