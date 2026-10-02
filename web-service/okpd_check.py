@@ -144,7 +144,7 @@ def summary(fixes: list[dict], total: int, left_unknown: int) -> list[str]:
 CONFLICT_SCORE = 2.5
 CONFLICT_WORDS = 2
 GUESS_SCORE = 1.0      # ниже — подсказки по наименованию не даём
-MAX_ROWS = 300         # строк в ответе проверки; остальные — только счётчиком
+MAX_ROWS = 2000        # строк в ответе проверки (окно показывает все); сверх — только счётчиком
 
 
 def name_ok(name) -> bool:

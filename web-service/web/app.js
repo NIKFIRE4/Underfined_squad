@@ -289,7 +289,8 @@ function checkDialog(check) {
     function refresh() {
       const fixed = fixRows.filter(rowFixed).length;
       startBtn.disabled = !state.mode;
-      validNote.textContent = state.mode === 'manual' && fixRows.length ? `Исправлено ${fmt(fixed)} из ${fmt(fixRows.length)}` : '';
+      // счёт — от всех строк с ошибкой в файле, а не только показанных в окне
+      validNote.textContent = state.mode === 'manual' && fixRows.length ? `Исправлено ${fmt(fixed)} из ${fmt(c.code + c.name)}` : '';
       for (const el of dialog.querySelectorAll('[data-line]')) {
         const r = fixRows.find(x => String(x.line) === el.dataset.line);
         if (r) el.dataset.valid = rowFixed(r) ? 'yes' : rowBad(r) ? 'no' : '';
@@ -341,7 +342,7 @@ function checkDialog(check) {
     }}, h('strong', {text: title}), h('span', {text}));
     if (fixRows.length) {
       manualBox.append(h('ul', {class: 'check-rows'}, fixRows.map(editRow)));
-      if (check.truncated) manualBox.append(h('p', {class: 'muted', text: 'Показаны первые строки; остальные будут исправлены автоматически.'}));
+      if (check.truncated) manualBox.append(h('p', {class: 'muted', text: `Показаны первые ${fmt(fixRows.length)} из ${fmt(c.code + c.name)}; остальные будут исправлены автоматически.`}));
     }
     if (conflictRows.length) manualBox.append(h('h3', {class: 'check-sub', text: 'Код и наименование не соответствуют'}), h('ul', {class: 'check-rows'}, conflictRows.map(trustRow)));
 
@@ -359,7 +360,7 @@ function checkDialog(check) {
         // не все исправлены — показать оставшиеся и спросить: исправить автоматически или оставить как есть
         const left = fixRows.filter(r => !rowFixed(r));
         if (left.length) {
-          const keep = await confirmUnresolved(left, check.truncated);
+          const keep = await confirmUnresolved(left, c.code + c.name - fixRows.length);
           if (keep === null) return;  // «Назад к исправлению»
           for (const line of keep) rows[line] = {keep: true};
         }
@@ -374,7 +375,7 @@ function checkDialog(check) {
 
 // Подтверждение при неисправленных строках: для всех и для каждой — исправить автоматически или оставить как есть.
 // Возвращает множество строк «оставить как есть» или null («Назад к исправлению»).
-function confirmUnresolved(rows, truncated) {
+function confirmUnresolved(rows, hidden = 0) {
   return new Promise(resolve => {
     const dialog = h('dialog', {class: 'check-dialog check-confirm', 'aria-labelledby': 'confirm-title'});
     const finish = value => { dialog.close(); dialog.remove(); resolve(value); };
@@ -391,7 +392,7 @@ function confirmUnresolved(rows, truncated) {
         for (const el of dialog.querySelectorAll(`input[type=radio][value="${v}"]`)) el.checked = true;
       }})));
     dialog.append(
-      h('header', {class: 'check-head'}, h('h2', {id: 'confirm-title', text: `Не все строки исправлены: ${fmt(rows.length)}`}),
+      h('header', {class: 'check-head'}, h('h2', {id: 'confirm-title', text: `Не все строки исправлены: ${fmt(rows.length + hidden)}`}),
         h('p', {text: 'Ознакомьтесь со строками ниже и выберите, что с ними сделать при подборе.'})),
       h('div', {class: 'check-body'},
         h('div', {class: 'check-trust'}, seg,
@@ -403,7 +404,7 @@ function confirmUnresolved(rows, truncated) {
           r.suggest ? h('p', {class: 'check-hint', text: `Автоматически: ${r.kind === 'code' ? r.suggest.code : `«${r.suggest.name}»`}`})
             : h('p', {class: 'check-hint', text: 'Автоматически подобрать не удалось — строка останется как есть.'}),
           radios(r)))),
-        truncated ? h('p', {class: 'muted', text: 'Строки сверх показанных в окне будут исправлены автоматически.'}) : null),
+        hidden > 0 ? h('p', {class: 'muted', text: `Ещё ${fmt(hidden)} ${plural(hidden, 'строка', 'строки', 'строк')} не поместились в окно — они будут исправлены автоматически.`}) : null),
       h('footer', {class: 'check-foot'},
         h('button', {class: 'btn btn-soft', type: 'button', text: 'Назад к исправлению', onclick: () => finish(null)}),
         h('button', {class: 'btn btn-primary', type: 'button', text: 'Подтвердить и запустить', onclick: () => finish(new Set(rows.filter(r => pick(r) === 'keep').map(r => String(r.line))))})));
