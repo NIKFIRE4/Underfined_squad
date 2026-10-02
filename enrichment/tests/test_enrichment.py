@@ -565,6 +565,8 @@ def test_api_rnp_from_registry(db_url, monkeypatch):
         body = client.get(f"/api/suppliers/{INN}").json()
         assert "rnp" not in calls[0]  # в ЕИС за РНП не ходили
         assert body["company"]["in_rnp"] is True and "rnp" in body["fetched_now"]
+        client.get(f"/api/suppliers/{INN}?refresh=true")
+        assert "rnp" in api.LIVE_SOURCES  # refresh не должен портить общий список источников
 
 
 def test_contacts_direct_contract_number():

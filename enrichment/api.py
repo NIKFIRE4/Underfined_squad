@@ -235,7 +235,7 @@ async def _enrich(inn: str, refresh: bool) -> dict:
     if not is_valid_inn(inn):
         raise HTTPException(400, f"Некорректный ИНН {inn}: 10 цифр для юрлица, 12 для ИП, проверка контрольной суммы")
     runs = await asyncio.to_thread(storage.load_runs, state["engine"], inn)
-    todo = LIVE_SOURCES if refresh else [s for s in LIVE_SOURCES if s not in runs]
+    todo = list(LIVE_SOURCES) if refresh else [s for s in LIVE_SOURCES if s not in runs]  # копия: ниже todo меняется
     fetched = []
     if "rnp" in todo and await asyncio.to_thread(_rnp_registry_fresh):
         # РНП скачан целиком (rnp-dump) — отвечаем из него мгновенно, без запроса в ЕИС
