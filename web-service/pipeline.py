@@ -14,6 +14,12 @@ csv.field_size_limit(1_000_000)
 OUTPUT_FIELDS = ["lot_id", "subject", "rank", "supplier_name", "supplier_inn", "supplier_kpp", "score", "role", "status", "region", "is_smp", "is_new", "reasons", "sources", "enrichment_status", "is_demo"]
 
 
+def split_headers(cells, delimiter):
+    """Заголовки в нижнем регистре. Ячейка в кавычках с разделителем внутри («"reqnum;procedure_name"»,
+    так пришло в файлах предзащиты) — это склеенные столбцы: значения в строках идут раздельно."""
+    return [h.strip().lower() for cell in cells for h in cell.split(delimiter)]
+
+
 def read_csv(path: Path, kind: str):
     import codecs
     sample = path.read_bytes() if path.stat().st_size < 65536 else None
@@ -32,7 +38,7 @@ def read_csv(path: Path, kind: str):
         delimiter = ";" if header_line.count(";") >= header_line.count(",") else ","
         f.seek(0)
         reader = csv.reader(f, delimiter=delimiter, strict=True)
-        headers = [h.strip().lower() for h in next(reader, [])]
+        headers = split_headers(next(reader, []), delimiter)
         required = {"lot_id"} if kind == "notices" else {"lot_id", "product_name", "okpd2_code"}
         missing = required - set(headers)
         if kind == "notices" and not {"subject", "procedure_name"}.intersection(headers):

@@ -57,6 +57,11 @@ class PipelineTests(unittest.TestCase):
         self.inputs('lot_id;subject\n0001;"Бумага;\nкартон"\n')
         self.assertEqual('Бумага;\nкартон', self.run_job()['preview'][0]['subject'].replace('\r\n','\n'))
 
+    def test_glued_quoted_header_cells(self):
+        # файлы предзащиты: «"reqnum;procedure_name"» — два столбца в одной ячейке заголовка
+        self.inputs('"lot_id";"reqnum;procedure_name";"subject"\n0001;;Поставка;Поставка бумаги\n')
+        self.assertEqual('Поставка бумаги', self.run_job()['preview'][0]['subject'])
+
     def test_missing_column(self):
         self.inputs(items='lot_id;product_name\n0001;Шприц\n')
         with self.assertRaisesRegex(ValueError, 'okpd2_code'):

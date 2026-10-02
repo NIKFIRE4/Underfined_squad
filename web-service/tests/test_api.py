@@ -223,6 +223,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(second['cached_from'],first['id'])
         self.assertEqual(second['stats'],first['stats'])
         self.assertEqual(self.call(f'/api/jobs/{second["id"]}/lots')[0],200)
+        # сверка ОКПД2 у результата из кэша берёт позиции лота из исходной задачи
+        lot=first['preview'][0]['lot_id']
+        self.assertEqual(self.call(f'/api/jobs/{second["id"]}/coverage?lot_id={lot}&inn=7707083893')[0],200)
         self.assertEqual(self.call(f'/api/jobs/{second["id"]}/download')[1],self.call(f'/api/jobs/{first["id"]}/download')[1])
         with patch('server.CACHE_TTL',0):
             self.assertNotIn('cached_from',run())

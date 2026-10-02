@@ -217,7 +217,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(400, {'error': 'Укажите лот и ИНН поставщика'})
                 else:
                     try:
-                        self.reply(200, coverage(DATA / match[1], lot_id, inn, job['mode']))
+                        # результат из кэша копирует только выдачу — позиции лота лежат в исходной задаче
+                        folder = DATA / (job.get('cached_from') if (DATA / str(job.get('cached_from')) / 'input.sqlite').exists() else match[1])
+                        self.reply(200, coverage(folder, lot_id, inn, job['mode']))
                     except LookupError as error:
                         self.reply(404, {'error': str(error)})
                     except Exception:

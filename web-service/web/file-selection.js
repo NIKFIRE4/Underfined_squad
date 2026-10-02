@@ -19,7 +19,8 @@
     }
     if (quoted) throw new Error('не удалось прочитать заголовки — проверьте кавычки в первой строке');
     values.push(value.trim().toLowerCase());
-    return values;
+    // «"reqnum;procedure_name"» в кавычках — склеенные столбцы (так пришло в файлах предзащиты)
+    return values.flatMap(v => v.split(delimiter).map(x => x.trim()));
   }
 
   function classify(text) {
