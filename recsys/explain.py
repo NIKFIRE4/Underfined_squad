@@ -116,6 +116,33 @@ def _negative(name, r):
     return None
 
 
+COUNT = {'s_n_win', 's_n_part', 's_n_customers', 'code_win_l6', 'code_win_l5', 'code_win_l4', 'code_win_l3',
+         'code_part_l5', 'code_part_l3', 'cust_win', 'cust_part', 'cust_class_win', 'district_class_win'}
+SHARE = {'s_win_rate', 's_em_share', 'platform_fit', 'code_cover_l5', 'code_cover_l3', 'group_share'}
+MONTHS = {'s_m_since_win', 's_m_since_part', 'code_m_since_win', 'cust_m_since_win'}
+
+
+def value_text(name, v):
+    """Значение признака для интерфейса: «7», «85%», «3 месяца назад», «нет»."""
+    v = None if v is None else float(v)  # numpy.float32 из матрицы признаков
+    if v is None or math.isnan(v):
+        return 'никогда' if name in MONTHS else 'нет данных'
+    if name in COUNT:
+        return f'{int(v):,}'.replace(',', ' ')
+    if name in SHARE:
+        return (f'{v:.1%}' if name == 'group_share' and v < 0.1 else f'{v:.0%}').replace('.', ',')
+    if name in MONTHS:
+        return _months(v)
+    if name in ('s_is_ip', 's_is_spb', 'price_in_range'):
+        return 'да' if v == 1 else 'нет'
+    if name == 'text_cos':
+        return f'{v:.2f}'.replace('.', ',')
+    if name == 'price_dev':
+        k = math.exp(abs(v))
+        return 'как обычно' if k < 1.5 else f'в {k:.0f} раз {"выше" if v > 0 else "ниже"} обычной'
+    return f'{v:g}'
+
+
 def status(r):
     """Статус контрагента по прозрачному правилу. Возвращает (статус, правило)."""
     if math.isnan(r['code_cover_l3']):  # у лота нет кодов ОКПД2 из истории — категорию сравнить не с чем

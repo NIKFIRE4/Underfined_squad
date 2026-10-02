@@ -19,7 +19,7 @@ import pandas as pd
 
 from .candidates import generate
 from .data import LotBatch, Vocab, code_levels, MAX_KEYS_PER_LEVEL
-from .explain import explain
+from .explain import explain, value_text
 from .features import FEATURES, build_features
 from .profiles import Snapshot
 from .text import TextModel
@@ -111,10 +111,23 @@ class Recommender:
                 'value': None if pd.isna(top.at[i, FEATURES[j]]) else round(float(top.at[i, FEATURES[j]]), 4),
                 'contribution': round(float(contrib[i, j]), 4),
             } for j in order])
+        # Полный разбор оценки для интерфейса: вклад каждого признака (SHAP, логиты LambdaRank) и его значение.
+        # TreeSHAP аддитивен: разность оценок двух кандидатов = сумма разностей вкладов, поэтому интерфейс может
+        # честно объяснить, за счёт чего №1 выше №2.
+        explanations = [{
+            'p_win': round(float(top.at[i, 'p_win']), 4),
+            'score': round(float(top.at[i, 'score']), 4),
+            'factors': [{
+                'feature': FEATURES[j], 'title': titles[FEATURES[j]], 'group': groups[FEATURES[j]],
+                'value': value_text(FEATURES[j], top.at[i, FEATURES[j]]),
+                'phi': round(float(contrib[i, j]), 4),
+            } for j in usable],
+        } for i in range(len(top))]
         top = top.merge(self.suppliers[['sid', 'inn']], on='sid', how='left')
         res = pd.concat([top[['inn', 'score', 'p_win']], ex], axis=1)
         res.insert(0, 'rank', np.arange(1, len(res) + 1))
         res['factors'] = factors
+        res['explanation'] = explanations
         return {'top': res, 'n_candidates': int(len(F)), 'warnings': warnings, 'batch': b}
 
     def recommend(self, lot, top_n=20):

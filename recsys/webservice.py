@@ -167,5 +167,6 @@ def recommend(lot, top_k: int) -> list:
             status=r['status'],
             reasons=[f"Вероятность победы по модели: {100 * r['p_win']:.0f}%"] + r['reasons'][:2],
             sources=[{'field': 'score', 'source': HISTORY_SOURCE, 'url': 'https://zakupki.gov.ru/', 'checked_at': checked_at}],
+            explanation=r['explanation'] | {'place': int(r['rank']), 'of': n_cands},
         ))
     return res
