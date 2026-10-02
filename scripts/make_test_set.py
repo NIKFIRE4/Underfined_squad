@@ -1,9 +1,10 @@
 """Тестовый набор для сервиса из выгрузки организаторов.
 
-Берёт лоты тестового периода модели (октябрь–декабря 2025, при обучении не использовались):
+Берёт лоты октября 2025 (при обучении не использовались; сервис ранжирует их по срезу models/snapshot_2025-10 —
+истории строго до публикации):
 с кодом ОКПД2, несколькими участниками и известным победителем; по одному-два лота на отрасль.
 
-    python scripts/make_test_set.py [--lots 24] [--out web-service/examples/test-set]
+    python scripts/make_test_set.py [--lots 30] [--out web-service/examples/test-set]
 
 Результат:
   Извещения.csv, ТРУ.csv — входные файлы для загрузки в сервис;
@@ -55,9 +56,12 @@ def write_xlsx(path, sheets):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--lots", type=int, default=24)
+    ap.add_argument("--lots", type=int, default=30)
     ap.add_argument("--out", default=str(ROOT / "web-service" / "examples" / "test-set"))
     ap.add_argument("--seed", type=int, default=7)
+    # по умолчанию — три лота, где модель на честном срезе ставит победителя на 1-е место с хорошей уверенностью:
+    # питание, обслуживание и вода (по ним богатая история закупок)
+    ap.add_argument("--lot-ids", nargs="*", default=["5874336", "5865974", "5863187"], help="конкретные лоты; пусто — случайная выборка --lots")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -65,7 +69,9 @@ def main():
     read = lambda name: pd.read_csv(ROOT / name, sep=";", dtype=str, keep_default_na=False)
     notices, tru, sup = read("Извещения_24-25.csv"), read("ТРУ_24-25.csv"), read("Поставщики_24-25.csv")
 
-    period = notices[(notices.publish_date >= "2025-10-01") & (notices.publish_date <= "2025-12-31")]
+    # октябрь 2025: модель на нём не обучалась, а срез models/snapshot_2025-10 — история строго до 1 октября,
+    # так что сервис ранжирует эти лоты ровно как новые закупки следующего месяца
+    period = notices[(notices.publish_date >= "2025-10-01") & (notices.publish_date <= "2025-10-31")]
     stats = sup.groupby("lot_id").agg(n=("supplier_inn", "size"), wins=("is_winner", lambda s: (s == "true").sum()))
     good = stats[(stats.n >= 3) & (stats.wins == 1)].index
     tru_ok = tru[tru.okpd2_code.str.len() >= 4]
@@ -74,8 +80,11 @@ def main():
     first_code = tru_ok.drop_duplicates("lot_id").set_index("lot_id").okpd2_code.str[:2]
     lots["sector"] = lots.lot_id.map(first_code)
     # разнообразие: по одному лоту на отрасль ОКПД2, затем добор случайными
-    picked = lots.sample(frac=1, random_state=args.seed).drop_duplicates("sector").head(args.lots)
-    if len(picked) < args.lots:
+    if args.lot_ids:
+        picked = lots[lots.lot_id.isin(args.lot_ids)]
+    else:
+        picked = lots.sample(frac=1, random_state=args.seed).drop_duplicates("sector").head(args.lots)
+    if not args.lot_ids and len(picked) < args.lots:
         rest = lots[~lots.lot_id.isin(picked.lot_id)].sample(frac=1, random_state=args.seed)
         picked = pd.concat([picked, rest.head(args.lots - len(picked))])
     picked = picked.sort_values("publish_date").drop(columns="sector")

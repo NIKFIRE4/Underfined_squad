@@ -71,6 +71,8 @@ def lot_to_input(lot):
         'platform': _platform(n, price),
         'customer_inn': _digits(n.get('customer_inn'), (10,)),
         'customer_kpp': _digits(n.get('customer_kpp'), (9,)),
+        # лот из прошлого ранжируется по истории до его публикации (бэктест, см. Recommender.snapshot_for)
+        'publish_date': (n.get('publish_date') or '').strip() or None,
     }
 
 

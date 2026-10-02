@@ -8,8 +8,13 @@
         'start_price': 250000, 'is_smp': True, 'platform': 'EM',
         'customer_inn': '7802141070', 'customer_kpp': '780201001',
     })
+
+Необязательное поле лота 'publish_date' (YYYY-MM-DD) включает бэктест: если лот старше основного среза,
+берётся самый свежий срез models/snapshot_YYYY-MM с cutoff не позже месяца лота — история строго
+до публикации, как при оценке модели. Без подходящего среза — основной (тогда в выдачу попадает будущее).
 """
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -18,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .candidates import generate
-from .data import LotBatch, Vocab, code_levels, MAX_KEYS_PER_LEVEL
+from .data import BASE_YEAR, LotBatch, Vocab, code_levels, MAX_KEYS_PER_LEVEL
 from .explain import explain, value_text
 from .features import FEATURES, build_features
 from .profiles import Snapshot
@@ -43,9 +48,23 @@ class Recommender:
         self.vocab = Vocab.load(d / 'vocab.npz')
         self.suppliers = pd.read_parquet(d / 'suppliers.parquet')
         self.snap = Snapshot.load(d / 'snapshot')
+        self.backtest = sorted((Snapshot.load(p) for p in d.glob('snapshot_*') if (p / 'cutoff.txt').exists()),
+                               key=lambda s: s.cutoff)
         self.lemm = Lemmatizer()
 
-    def make_batch(self, lot):
+    def snapshot_for(self, lot):
+        """Срез истории для лота: основной или, для лота из прошлого, бэктестовый без заглядывания в будущее."""
+        m = re.match(r'(\d{4})-(\d{2})', str(lot.get('publish_date') or ''))
+        if not m:
+            return self.snap
+        month = (int(m[1]) - BASE_YEAR) * 12 + int(m[2]) - 1
+        if month >= self.snap.cutoff:
+            return self.snap
+        fit = [s for s in self.backtest if s.cutoff <= month]
+        return fit[-1] if fit else self.snap
+
+    def make_batch(self, lot, snap=None):
+        snap = snap or self.snap
         items = lot.get('items') or []
         subj = self.lemm(clean_text(lot.get('subject', '')))
         names = [self.lemm(clean_text(i.get('name', ''))) for i in items[:20]]
@@ -71,7 +90,7 @@ class Recommender:
         cap = self.meta['price_cap']['EM' if em else 'AISGZ']
         kpp = lot.get('customer_kpp') or ''
         ctx = pd.DataFrame([{
-            'lot_id': 0, 'month': self.snap.cutoff,
+            'lot_id': 0, 'month': snap.cutoff,
             'cid': int(self.vocab.cid([lot.get('customer_inn')])[0]),
             'did': int(self.vocab.did([kpp[:4] or None])[0]),
             'mc': int(self.vocab.mc([main_class])[0]),
@@ -84,7 +103,8 @@ class Recommender:
 
     def rank(self, lot, top_n=10, n_factors=8):
         """Полный результат для API: топ-N с объяснениями и вкладами признаков, число кандидатов, предупреждения."""
-        b = self.make_batch(lot)
+        snap = self.snapshot_for(lot)
+        b = self.make_batch(lot, snap)
         warnings = []
         if b.ctx.cid.iloc[0] < 0:
             warnings.append('Заказчик не встречался в истории закупок: признаки по заказчику не используются')
@@ -92,10 +112,10 @@ class Recommender:
             warnings.append('Не передан ни один код ОКПД2: подбор идёт по тексту и заказчику')
         elif b.keys.empty:
             warnings.append('Ни один код ОКПД2 лота не встречался в истории: подбор идёт по тексту и заказчику')
-        cands = generate(self.snap, b)
+        cands = generate(snap, b)
         if cands.empty:
             return {'top': pd.DataFrame(), 'n_candidates': 0, 'warnings': warnings + ['Кандидаты не найдены'], 'batch': b}
-        F = build_features(self.snap, b, cands)
+        F = build_features(snap, b, cands)
         F['score'] = self.booster.predict(F[FEATURES], num_iteration=self.meta['best_iteration'])
         F['p_win'] = softmax_by_lot(F.lot_id, F.score, self.meta['temperature']) * self.meta['candidate_coverage']
         top = F.sort_values('score', ascending=False).head(top_n).reset_index(drop=True)

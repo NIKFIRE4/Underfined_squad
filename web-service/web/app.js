@@ -778,7 +778,7 @@ $('examples').addEventListener('click', async e => {
   if (state.busy) return;
   button.setAttribute('aria-busy', 'true');
   try {
-    const files = await Promise.all([['notices', 'Извещения_пример.csv'], ['items', 'ТРУ_пример.csv']].map(async ([kind, name]) => {
+    const files = await Promise.all([['notices', 'Извещения_октябрь_2025.csv'], ['items', 'ТРУ_октябрь_2025.csv']].map(async ([kind, name]) => {
       const response = await fetch('/api/examples/' + kind);
       if (!response.ok) throw new Error('Не удалось получить пример');
       return new File([await response.blob()], name, {type: 'text/csv'});

@@ -162,8 +162,12 @@ class Handler(BaseHTTPRequestHandler):
             # Контракт ответа описан в INTEGRATION.md; пока available=false, и интерфейс показывает заглушку.
             self.reply(200, {"inn": match[1], "available": False})
         elif route in ("/api/examples/notices", "/api/examples/items"):
-            name = "notices.csv" if route.endswith("notices") else "items.csv"
-            self.serve_file(ROOT / "examples" / name, "text/csv; charset=utf-8", name)
+            # «Запустить на примере»: реальные лоты октября 2025 (scripts/make_test_set.py), модель их не видела;
+            # без набора — два синтетических лота
+            notices = route.endswith("notices")
+            test_set = ROOT / "examples" / "test-set" / ("Извещения.csv" if notices else "ТРУ.csv")
+            path = test_set if test_set.exists() else ROOT / "examples" / ("notices.csv" if notices else "items.csv")
+            self.serve_file(path, "text/csv; charset=utf-8", path.name)
         else:
             match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/download|/lots)?", route)
             if not match or match[1] not in JOBS:
