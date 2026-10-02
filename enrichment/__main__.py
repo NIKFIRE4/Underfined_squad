@@ -240,7 +240,9 @@ def cmd_export_csv(args) -> None:
         "role", "role_label", "role_confidence", "role_evidence", "risk_flag_codes"]))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     rows = []
-    for inn in sorted(i for i in facts if is_valid_inn(i)):
+    # по умолчанию — одна строка на ИНН поставщика; пул новых компаний и ИНН из запросов к API — по --all
+    keep = None if args.all else set(supplier_inns(args.suppliers))
+    for inn in sorted(i for i in facts if is_valid_inn(i) and (keep is None or i in keep)):
         row, card = build_company(inn, facts[inn], runs.get(inn, {}))
         full = row | {k: v["value"] for k, v in card.items() if k not in row}
         full["links"] = card_links(inn, full)
@@ -370,6 +372,8 @@ def main() -> None:
     ex = sub.add_parser("export-csv", help="выгрузить обогащённые компании в CSV (разделитель ;)")
     ex.add_argument("--out", default="data/companies_enriched.csv")
     ex.add_argument("--no-xlsx", action="store_true", help="не писать копию .xlsx для Excel")
+    ex.add_argument("--all", action="store_true", help="все ИНН в базе (с пулом и запросами к API), а не только поставщики")
+    ex.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     sub.add_parser("rebuild", help="пересобрать витрину companies из фактов")
 
     s = sub.add_parser("show")
