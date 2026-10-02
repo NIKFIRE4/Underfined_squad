@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 
 from functools import lru_cache
 
-from . import history, storage
+from . import history, rnp_dump, storage
 from .card import build_company, links
 from .discovery import classify_role
 from .http import Http
@@ -196,6 +196,14 @@ def _card(inn: str) -> dict | None:
     }
 
 
+RNP_REGISTRY_MAX_AGE_DAYS = 7  # старше — снова спрашиваем ЕИС по ИНН
+
+
+def _rnp_registry_fresh() -> bool:
+    ts = storage.rnp_fetched_at(state["engine"])
+    return ts is not None and (datetime.now(ts.tzinfo) - ts).days < RNP_REGISTRY_MAX_AGE_DAYS
+
+
 @lru_cache(maxsize=1)
 def _reqnums() -> dict:
     """Номера выигранных закупок ЕИС по ИНН — ключ к контракту с контактами. Нет CSV — пусто."""
@@ -206,9 +214,22 @@ def _reqnums() -> dict:
         return {}
 
 
+@lru_cache(maxsize=1)
+def _pool_numbers() -> dict:
+    try:
+        return history.pool_contract_numbers()
+    except Exception as e:  # noqa: BLE001
+        log.warning("pool contracts: %s", e)
+        return {}
+
+
 def _hints(inn: str) -> dict:
     facts = {f.field: f.value for f in storage.load_facts(state["engine"], inn)}
-    return {"reqnums": _reqnums().get(inn), "name": facts.get("name_short") or facts.get("name_full")}
+    numbers = list(_pool_numbers().get(inn, []))
+    if facts.get("contact_contract_url"):
+        numbers.insert(0, str(facts["contact_contract_url"]).rsplit("=", 1)[-1])
+    return {"reqnums": _reqnums().get(inn), "name": facts.get("name_short") or facts.get("name_full"),
+            "contract_numbers": numbers}
 
 
 async def _enrich(inn: str, refresh: bool, offline: bool = False) -> dict:
@@ -216,13 +237,20 @@ async def _enrich(inn: str, refresh: bool, offline: bool = False) -> dict:
         raise HTTPException(400, f"Некорректный ИНН {inn}: 10 цифр для юрлица, 12 для ИП, проверка контрольной суммы")
     runs = await asyncio.to_thread(storage.load_runs, state["engine"], inn)
     # offline — ответ за миллисекунды для списков кандидатов: недоступный источник (капча ФНС) не держит весь лот
-    todo = [] if offline else LIVE_SOURCES if refresh else [s for s in LIVE_SOURCES if s not in runs]
+    # list(...) — копия: ниже todo меняется, общий LIVE_SOURCES трогать нельзя
+    todo = [] if offline else list(LIVE_SOURCES) if refresh else [s for s in LIVE_SOURCES if s not in runs]
     fetched = []
+    if "rnp" in todo and await asyncio.to_thread(_rnp_registry_fresh):
+        # РНП скачан целиком (rnp-dump) — отвечаем из него мгновенно, без запроса в ЕИС
+        todo.remove("rnp")
+        await asyncio.to_thread(lambda: storage.save_results(
+            state["engine"], rnp_dump.apply_to_suppliers(state["engine"], {inn})))
+        fetched.append("rnp")
     if todo:
         hints = await asyncio.to_thread(_hints, inn) if "contacts" in todo else None
         results = await fetch_all(state["http"], inn, todo, captcha_retries=0, timeout=SOURCE_TIMEOUT, hints=hints)
         await asyncio.to_thread(storage.save_results, state["engine"], results)
-        fetched = [r.source for r in results]
+        fetched += [r.source for r in results]
     card = await asyncio.to_thread(_card, inn)
     if card is None:
         raise HTTPException(404, f"По ИНН {inn} ничего не найдено ни в одном источнике")

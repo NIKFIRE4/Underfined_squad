@@ -254,6 +254,14 @@ def test_find_new_companies(db_url):
         {"inn": "7802000002", "code": "32.50", "kind": "okved"},
         {"inn": "7803000003", "code": "32.50", "kind": "okved_main"},
     ])
+    storage.update_pool_activity(engine, [
+        {"inn": "7802000002", "employees_2025": 0, "taxes_paid_2025": 0, "pool_status": "excluded",
+         "pool_reason": "нет налогов и сотрудников за 2025 г.", "pool_tier": None}])
+    assert "7802000002" not in {c.inn for c in discovery.find_new_companies(engine, ["32.50.13.190"],
+                                                                             regions={"78"})}
+    storage.update_pool_activity(engine, [
+        {"inn": "7802000002", "employees_2025": 3, "taxes_paid_2025": 1e5, "pool_status": "unverified",
+         "pool_reason": "сотрудников: 3", "pool_tier": "active"}])
     found = discovery.find_new_companies(engine, ["32.50.13.190"], regions={"78", "47"},
                                          exclude={"7803000003"})
     by_inn = {c.inn: c for c in found}
@@ -415,6 +423,7 @@ def test_api_supplier(db_url, monkeypatch):
     monkeypatch.setenv("ENRICHMENT_DB", db_url)
     monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
     monkeypatch.setattr(api, "_reqnums", lambda: {INN: ["0172200004925000426"]})
+    monkeypatch.setattr(api, "_pool_numbers", lambda: {})
     with TestClient(api.app) as client:
         r = client.get(f"/api/suppliers/{INN}")
         assert r.status_code == 200
@@ -425,7 +434,7 @@ def test_api_supplier(db_url, monkeypatch):
         assert body["fields"]["revenue"]["source"] == "bo"
         assert {s["source"]: s["status"] for s in body["sources_status"]}["rnp"] == "captcha"
         assert calls[0][2] == {"captcha_retries": 0, "timeout": api.SOURCE_TIMEOUT,
-                               "hints": {"reqnums": ["0172200004925000426"], "name": None}}
+                               "hints": {"reqnums": ["0172200004925000426"], "name": None, "contract_numbers": []}}
         assert body["contacts"]["phones"] == ["+78123271380"] and body["contacts"]["found"] is True
         kinds = {l["title"]: l["kind"] for l in body["links"]}
         assert kinds["Контракт ЕИС с контактами поставщика"] == "contact"
@@ -482,6 +491,10 @@ def test_contacts_parse_and_fetch():
     p = contacts.parse_participants(html)[0]
     assert p["inn"] == "7813037232" and p["phones"] == ["+78123271380"] and p["emails"] == ["do@zaoff.spb.ru"]
     assert contacts._phones("8(812)327-13-80, +7 921 000 11 22") == ["+78123271380", "+79210001122"]
+    # старая карточка: без колонки «Почтовый адрес» — колонки по заголовкам, не по позиции
+    old = contacts.parse_participants((FX / "eis_participants_old.html").read_text(encoding="utf-8"))[0]
+    assert old["inn"] == "5029163832" and old["phones"] == ["+74957301555"]
+    assert old["emails"] == ["e-trade@stmwater.ru"] and old["postal"] is None
     assert contacts.search_name('ООО "БРАСС"') == "БРАСС"
     search = '<a href="/epz/contract/contractCard/common-info.html?reestrNumber=2781409670624000014">'
     http = FakeHttp({"search/results": search, "participants": html})
@@ -535,3 +548,43 @@ def test_rnp_dump(db_url):
     res = {r.inn: facts(r) for r in rnp_dump.apply_to_suppliers(engine, {target, "7804428656"})}
     assert res[target]["rnp_ever"] is True and res[target]["rnp_entries"]
     assert res["7804428656"]["in_rnp"] is False and res["7804428656"]["rnp_ever"] is False
+
+
+def test_api_rnp_from_registry(db_url, monkeypatch):
+    from fastapi.testclient import TestClient
+    from enrichment import api
+    calls = []
+
+    async def fake_fetch_all(http, inn, sources, **kw):
+        calls.append(tuple(sources))
+        r = SourceResult("pb", inn)
+        r.add("status", "Действующая организация", now_utc())
+        return [r]
+
+    monkeypatch.setenv("ENRICHMENT_DB", db_url)
+    monkeypatch.setattr(api, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(api, "_reqnums", lambda: {})
+    monkeypatch.setattr(api, "_pool_numbers", lambda: {})
+    with TestClient(api.app) as client:
+        storage.upsert_rnp(api.state["engine"], [{"number": "1", "inn": INN, "state": "Размещено",
+                                                  "law": "44-ФЗ", "fetched_at": now_utc()}])
+        body = client.get(f"/api/suppliers/{INN}").json()
+        assert "rnp" not in calls[0]  # в ЕИС за РНП не ходили
+        assert body["company"]["in_rnp"] is True and "rnp" in body["fetched_now"]
+        client.get(f"/api/suppliers/{INN}?refresh=true")
+        assert "rnp" in api.LIVE_SOURCES  # refresh не должен портить общий список источников
+
+
+def test_contacts_direct_contract_number():
+    from enrichment.sources import contacts
+    html = (FX / "eis_participants_old.html").read_text(encoding="utf-8")
+    seen = []
+
+    class H:
+        async def request(self, source, method, url, params=None, **kw):
+            seen.append(url)
+            return httpx.Response(200, text=html)
+
+    f = facts(run(contacts.fetch(H(), "5029163832", None, None, ["2771911685724000003"])))
+    assert f["contact_emails"] == ["e-trade@stmwater.ru"] and f["contact_found_by"] == "реестровый номер контракта"
+    assert len(seen) == 1 and "participants" in seen[0]  # без поиска

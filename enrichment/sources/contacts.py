@@ -41,23 +41,30 @@ def _phones(text: str) -> list[str]:
 
 
 def parse_participants(html: str) -> list[dict]:
-    """Строки таблицы «Информация о поставщиках»: inn, kpp, name, address, postal, phones, emails."""
+    """Строки таблицы «Информация о поставщиках»: inn, kpp, name, address, postal, phones, emails.
+    Колонки ищем по заголовкам: в старых карточках нет «Почтового адреса», и позиции сдвигаются."""
+    tree = HTMLParser(html)
+    headers = [th.text(strip=True).lower() for th in tree.css("thead th")]
+
+    def col(*keys: str) -> int | None:
+        return next((i for i, h in enumerate(headers) if any(k in h for k in keys)), None)
+
+    i_addr, i_postal, i_contact = col("адрес места"), col("почтовый"), col("телефон", "почта")
     rows = []
-    for tr in HTMLParser(html).css("tbody tr"):
+    for tr in tree.css("tbody tr"):
         tds = tr.css("td")
-        if len(tds) < 5:
+        if not tds:
             continue
         org = tds[0]
         spans = [s.text(strip=True) for s in org.css("span")]
         ids = {spans[i].rstrip(":"): spans[i + 1] for i in range(len(spans) - 1) if spans[i].endswith(":")}
-        name = (org.text(deep=False, strip=True) or "").strip()
-        contact_text = tds[4].text(separator="\n", strip=True)
+        cell = lambda i: tds[i].text(separator="\n", strip=True) if i is not None and i < len(tds) else ""
+        contact_text = cell(i_contact)
         emails = list(dict.fromkeys(m.lower() for m in EMAIL.findall(contact_text)))
-        phones = _phones(EMAIL.sub(" ", contact_text).replace("\n", ";"))
         rows.append({
-            "inn": ids.get("ИНН"), "kpp": ids.get("КПП"), "name": name,
-            "address": tds[2].text(strip=True) or None, "postal": tds[3].text(strip=True) or None,
-            "phones": phones, "emails": emails,
+            "inn": ids.get("ИНН"), "kpp": ids.get("КПП"), "name": (org.text(deep=False, strip=True) or "").strip(),
+            "address": cell(i_addr) or None, "postal": cell(i_postal) or None,
+            "phones": _phones(EMAIL.sub(" ", contact_text).replace("\n", ";")), "emails": emails,
         })
     return rows
 
@@ -83,7 +90,8 @@ async def _supplier_in(http: Http, number: str, inn: str) -> tuple[dict | None, 
     return next((p for p in parse_participants(r.text) if p["inn"] == inn), None), r.status_code
 
 
-async def fetch(http: Http, inn: str, reqnums: list[str] | None = None, name: str | None = None) -> SourceResult:
+async def fetch(http: Http, inn: str, reqnums: list[str] | None = None, name: str | None = None,
+                contract_numbers: list[str] | None = None) -> SourceResult:
     """Поиск → карточка → стоп при первом совпадении ИНН: обычно 2 запроса на ИНН.
     Поиск — самый «дорогой» эндпоинт (429 при частых запросах), поэтому лишних поисков не делаем."""
     res = SourceResult(SOURCE, inn)
@@ -109,6 +117,9 @@ async def fetch(http: Http, inn: str, reqnums: list[str] | None = None, name: st
             return True
         return False
 
+    # известные реестровые номера контрактов ЕИС — сразу карточка, без поиска (1 запрос)
+    if await try_numbers(list(dict.fromkeys(contract_numbers or []))[:MAX_CARDS], "реестровый номер контракта"):
+        return res
     for reqnum in (reqnums or [])[:MAX_REQNUMS]:
         if await try_numbers((await _search(http, {"searchString": reqnum}))[:1], f"закупка {reqnum}"):
             return res

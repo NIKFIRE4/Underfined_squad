@@ -67,7 +67,8 @@ async def fetch_all(http: Http, inn: str, sources: list[str], *, captcha_retries
 
     coros = [run(n, fn) for n, fn in plain.items() if n in sources]
     if "contacts" in sources:
-        coros.append(run("contacts", lambda h, i: contacts.fetch(h, i, hints.get("reqnums"), hints.get("name"))))
+        coros.append(run("contacts", lambda h, i: contacts.fetch(
+            h, i, hints.get("reqnums"), hints.get("name"), hints.get("contract_numbers"))))
     if "pb" in sources:
         coros.append(pb_then_bo())
     elif "bo" in sources:

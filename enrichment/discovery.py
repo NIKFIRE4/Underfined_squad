@@ -140,7 +140,14 @@ def find_new_companies(engine: Engine, okpd2: list[str], *, regions: set[str] | 
     for inn in inns:
         c = cands[inn]
         p = info.get(inn)
+        if p is not None and p["pool_status"] in ("excluded", "supplier"):
+            continue  # неактивные по выгрузкам ФНС, РНП или уже поставщики (pool-activity)
         if p is not None:
+            if p["pool_status"] == "unverified" and p["pool_reason"]:
+                c.evidence.append({"text": f"Активность: {p['pool_reason']}", "source": "fns_rsmp",
+                                   "channel": "activity", "score": 0, "fetched_at": p["fetched_at"]})
+            if p["pool_tier"] == "strong":
+                c.score += 5
             c.name = p["name_short"] or p["name_full"] or c.name
             c.region_code, c.is_smp = p["region_code"], True
             c.okved_main, c.products = p["okved_main"], p["products"] or []

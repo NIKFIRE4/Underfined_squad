@@ -20,9 +20,9 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
-from . import discovery, fns_dumps, history, registries, rnp_dump, storage
+from . import discovery, fns_dumps, history, pool_activity, registries, rnp_dump, storage
 from .card import build_company
 from .card import links as card_links
 from .http import Http
@@ -83,16 +83,27 @@ async def cmd_batch(args) -> None:
         inns = inns[: args.limit]
     log.info("batch: %d INN, sources=%s, concurrency=%d", len(inns), args.sources, args.concurrency)
 
-    reqnums, names = {}, {}
+    reqnums, names, numbers = {}, {}, {}
     if "contacts" in args.sources:  # подсказки для поиска контракта: номера закупок и название
         reqnums = history.won_reqnums(args.suppliers)
+        numbers = history.pool_contract_numbers()
+        with engine.connect() as conn:  # уже найденный контракт — перепроверка напрямую, без поиска
+            for inn, url in conn.execute(select(storage.company_facts.c.inn, storage.company_facts.c.value).where(
+                    storage.company_facts.c.field == "contact_contract_url")):
+                numbers.setdefault(inn, []).insert(0, str(url).rsplit("=", 1)[-1])
+        if args.pool:
+            known = set(supplier_inns(args.suppliers))  # один раз, а не на каждый ИНН
+            inns = [i for i in numbers if is_valid_inn(i) and i not in known]
+            if not args.force:
+                done = storage.done_inns(engine, args.sources)
+                inns = [i for i in inns if i not in done]
         with engine.connect() as conn:
             names = {i: n1 or n2 for i, n1, n2 in conn.execute(
                 select(storage.companies.c.inn, storage.companies.c.name_short, storage.companies.c.name_full))}
         log.info("contacts: номера закупок для %d ИНН, названия для %d", len(reqnums), len(names))
         inns.sort(key=lambda i: i not in reqnums)  # стабильно: внутри групп порядок по активности
-        if not args.contacts_by_name:  # без номера закупки и без поиска по названию искать нечем
-            inns = [i for i in inns if i in reqnums]
+        if not args.contacts_by_name:  # без номеров закупки/контракта и без поиска по названию искать нечем
+            inns = [i for i in inns if i in reqnums or i in numbers]
 
     queue: asyncio.Queue[str] = asyncio.Queue()
     for i in inns:
@@ -107,7 +118,7 @@ async def cmd_batch(args) -> None:
             except asyncio.QueueEmpty:
                 return
             try:
-                hints = {"reqnums": reqnums.get(inn),
+                hints = {"reqnums": reqnums.get(inn), "contract_numbers": numbers.get(inn),
                          "name": names.get(inn) if args.contacts_by_name else None}
                 row = await enrich(http, engine, inn, args.sources, hints)
                 stats[row["enrichment_status"]] += 1
@@ -198,6 +209,31 @@ async def cmd_rnp_dump(args) -> None:
     rebuild_all(engine, targets)
 
 
+def cmd_pool_activity(args) -> None:
+    engine = _engine(args.db)
+    stats = pool_activity.compute(engine, set(supplier_inns(args.suppliers)))
+    log.info("пул: %s", stats)
+    if args.out:
+        _export_unverified(engine, args.out)
+
+
+def _export_unverified(engine, out: str) -> None:
+    p = storage.pool_companies
+    cols = ["inn", "kind", "ogrn", "name_full", "name_short", "region_code", "locality", "smp_category", "smp_since",
+            "employees", "employees_2025", "taxes_paid_2025", "okved_main", "okved_main_name", "okved_extra",
+            "products", "licenses_count", "pool_tier", "pool_reason", "as_of", "source"]
+    with engine.connect() as conn, open(out, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(cols + ["status"])
+        n = 0
+        for r in conn.execute(select(*[p.c[c] for c in cols]).where(p.c.pool_status == "unverified")
+                              .order_by(case({"strong": 0, "active": 1, "signal": 2}, value=p.c.pool_tier, else_=3),
+                                        p.c.taxes_paid_2025.desc().nulls_last())):
+            w.writerow([_csv_value(v) for v in r] + ["Непроверенный"])
+            n += 1
+    log.info("непроверенные: %s, %d строк", out, n)
+
+
 def cmd_history_load(args) -> None:
     engine = _engine(args.db)
     results = history.load(suppliers=args.suppliers)
@@ -229,7 +265,9 @@ def cmd_export_csv(args) -> None:
         "role", "role_label", "role_confidence", "role_evidence", "risk_flag_codes"]))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     rows = []
-    for inn in sorted(i for i in facts if is_valid_inn(i)):
+    # по умолчанию — одна строка на ИНН поставщика; пул новых компаний и ИНН из запросов к API — по --all
+    keep = None if args.all else set(supplier_inns(args.suppliers))
+    for inn in sorted(i for i in facts if is_valid_inn(i) and (keep is None or i in keep)):
         row, card = build_company(inn, facts[inn], runs.get(inn, {}))
         full = row | {k: v["value"] for k, v in card.items() if k not in row}
         full["links"] = card_links(inn, full)
@@ -325,6 +363,8 @@ def main() -> None:
     b.add_argument("--limit", type=int)
     b.add_argument("--concurrency", type=int, default=6)
     b.add_argument("--force", action="store_true", help="перезапросить уже обогащённые")
+    b.add_argument("--pool", action="store_true",
+                   help="контакты для пула новых контрагентов (номера контрактов из dataset/new_counterparties_pg)")
     b.add_argument("--contacts-by-name", action="store_true",
                    help="контакты: искать контракт и по названию (4 запроса на ИНН, находит редко)")
     b.add_argument("--missing-status", action="store_true",
@@ -345,6 +385,9 @@ def main() -> None:
     rl.add_argument("--software", help=f"по умолчанию {registries.SOFTWARE_GLOB}")
     rd = sub.add_parser("rnp-dump", help="РНП целиком (~40 мин) вместо запроса по каждому ИНН (~11 ч)")
     rd.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    pa = sub.add_parser("pool-activity", help="расширить базу: активные МСП СПб/ЛО без истории → «непроверенные»")
+    pa.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
+    pa.add_argument("--out", default="data/unverified_suppliers.csv", help="CSV с непроверенными ('' — не писать)")
     hl = sub.add_parser("history-load", help="признаки из истории закупок (роль «дистрибьютор»)")
     hl.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     dc = sub.add_parser("discover", help="новые компании по ОКПД2 лота (ФТ-06)")
@@ -357,6 +400,8 @@ def main() -> None:
     ex = sub.add_parser("export-csv", help="выгрузить обогащённые компании в CSV (разделитель ;)")
     ex.add_argument("--out", default="data/companies_enriched.csv")
     ex.add_argument("--no-xlsx", action="store_true", help="не писать копию .xlsx для Excel")
+    ex.add_argument("--all", action="store_true", help="все ИНН в базе (с пулом и запросами к API), а не только поставщики")
+    ex.add_argument("--suppliers", default=DEFAULT_SUPPLIERS)
     sub.add_parser("rebuild", help="пересобрать витрину companies из фактов")
 
     s = sub.add_parser("show")
@@ -382,6 +427,8 @@ def main() -> None:
         cmd_registries_load(args)
     elif args.cmd == "rnp-dump":
         asyncio.run(cmd_rnp_dump(args))
+    elif args.cmd == "pool-activity":
+        cmd_pool_activity(args)
     elif args.cmd == "history-load":
         cmd_history_load(args)
     elif args.cmd == "discover":

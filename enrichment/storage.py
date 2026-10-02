@@ -6,11 +6,12 @@ enrichment_runs — статус каждого источника по ИНН: 
 companies       — плоская витрина для ранкера и UI, собирается из company_facts
 """
 
+from datetime import timezone
 from typing import Any, Iterable
 
 from sqlalchemy import (
     JSON, Boolean, Column, DateTime, Float, Index, Integer, MetaData, String, Table, Text,
-    create_engine, inspect, select, text,
+    create_engine, func, inspect, select, text,
 )
 from sqlalchemy.engine import Engine
 
@@ -117,6 +118,12 @@ pool_companies = Table(
     Column("products", JSON),  # ОКПД2 производимой продукции из реестра МСП
     Column("licenses_count", Integer),
     Column("as_of", String(10)),
+    # активность и статус для расширения базы поставщиков (pool-activity)
+    Column("employees_2025", Float),
+    Column("taxes_paid_2025", Float),
+    Column("pool_status", Text, index=True),   # unverified | excluded | supplier
+    Column("pool_reason", Text),
+    Column("pool_tier", Text),                 # strong (≥5 сотрудников) | active | signal (ИП с лицензией/продукцией)
     Column("source", String(32), nullable=False),
     Column("fetched_at", DateTime(timezone=True), nullable=False),
 )
@@ -302,9 +309,32 @@ def upsert_rnp(engine: Engine, rows: list[dict]) -> None:
 
 def rnp_by_inn(engine: Engine, inns: set[str]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
+    q = select(rnp_registry)
+    if len(inns) <= 1000:  # API по одному ИНН — по индексу; пакет — одним проходом
+        q = q.where(rnp_registry.c.inn.in_(list(inns)))
     with engine.connect() as conn:
-        for r in conn.execute(select(rnp_registry)).mappings():
+        for r in conn.execute(q).mappings():
             if r["inn"] in inns:
                 out.setdefault(r["inn"], []).append(
                     {k: r[k] for k in ("number", "law", "state", "name", "inn", "included", "updated")})
     return out
+
+
+def rnp_fetched_at(engine: Engine):
+    """Когда скачан реестр РНП (rnp-dump); None — не скачивался."""
+    with engine.connect() as conn:
+        ts = conn.execute(select(func.max(rnp_registry.c.fetched_at))).scalar()
+    if ts is not None and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def update_pool_activity(engine: Engine, rows: list[dict], chunk: int = 5000) -> None:
+    """rows: [{inn, employees_2025, taxes_paid_2025, pool_status, pool_reason, pool_tier}]"""
+    from sqlalchemy import bindparam, update
+    stmt = (update(pool_companies).where(pool_companies.c.inn == bindparam("b_inn"))
+            .values({k: bindparam(k) for k in ("employees_2025", "taxes_paid_2025", "pool_status",
+                                               "pool_reason", "pool_tier")}))
+    for i in range(0, len(rows), chunk):
+        with engine.begin() as conn:
+            conn.execute(stmt, [r | {"b_inn": r["inn"]} for r in rows[i : i + chunk]])
