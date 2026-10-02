@@ -66,7 +66,8 @@ python3 server.py
 Для отдельно запущенного HTTP-сервиса модели доступен `POST /analyze`: [настройка адреса и пример запроса](ANALYZE.md). Он принимает подготовленные поля в JSON и возвращает ответ модели. Подключение этого endpoint к CSV-сценарию и PostgreSQL требует согласованной схемы данных.
 
 - `integrations/recommender.py` — локальная модель и исторический индекс поставщиков.
-- `integrations/enricher.py` — поиск новых компаний и обогащение.
+- `integrations/enricher.py` — обогащение кандидатов модели через API обогащения.
+- `integrations/new_pool.py` — новые компании для вкладки «Непроверенные» из пула `data/external/new_counterparties*.parquet`.
 - `models.py` — общие структуры `Lot` и `Candidate`.
 
 Оба адаптера подключены. Полный стенд — модель + обогащение + PostgreSQL:

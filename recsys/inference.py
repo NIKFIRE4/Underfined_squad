@@ -125,20 +125,21 @@ class Recommender:
         if cands.empty:
             return {'top': pd.DataFrame(), 'n_candidates': 0, 'warnings': warnings + ['Кандидаты не найдены'], 'batch': b}
         F = build_features(snap, b, cands)
-        F['score'] = self.booster.predict(F[FEATURES], num_iteration=self.meta['best_iteration'])
+        feats = self.meta['features']  # признаки этой модели: первая модель — 33, v2 — больше
+        F['score'] = self.booster.predict(F[feats], num_iteration=self.meta['best_iteration'])
         F['p_win'] = softmax_by_lot(F.lot_id, F.score, self.meta['temperature']) * self.meta['candidate_coverage']
         F['fit'] = self.fit(F.score)
         top = F.sort_values('score', ascending=False).head(top_n).reset_index(drop=True)
-        contrib = self.booster.predict(top[FEATURES], num_iteration=self.meta['best_iteration'], pred_contrib=True)
-        ex = explain(top, contrib)
+        contrib = self.booster.predict(top[feats], num_iteration=self.meta['best_iteration'], pred_contrib=True)
+        ex = explain(top, contrib, feats)
         titles, groups = self.meta['titles'], self.meta['groups']
-        usable = [j for j, f in enumerate(FEATURES) if groups[f] != 'лот']
+        usable = [j for j, f in enumerate(feats) if groups[f] != 'лот']
         factors = []
         for i in range(len(top)):
             order = sorted(usable, key=lambda j: -abs(contrib[i, j]))[:n_factors]
             factors.append([{
-                'feature': FEATURES[j], 'title': titles[FEATURES[j]], 'group': groups[FEATURES[j]],
-                'value': None if pd.isna(top.at[i, FEATURES[j]]) else round(float(top.at[i, FEATURES[j]]), 4),
+                'feature': feats[j], 'title': titles[feats[j]], 'group': groups[feats[j]],
+                'value': None if pd.isna(top.at[i, feats[j]]) else round(float(top.at[i, feats[j]]), 4),
                 'contribution': round(float(contrib[i, j]), 4),
             } for j in order])
         # Полный разбор оценки для интерфейса: вклад каждого признака (SHAP, логиты LambdaRank) и его значение.
@@ -149,8 +150,8 @@ class Recommender:
             'fit': None if pd.isna(top.at[i, 'fit']) else round(float(top.at[i, 'fit']), 1),
             'score': round(float(top.at[i, 'score']), 4),
             'factors': [{
-                'feature': FEATURES[j], 'title': titles[FEATURES[j]], 'group': groups[FEATURES[j]],
-                'value': value_text(FEATURES[j], top.at[i, FEATURES[j]]),
+                'feature': feats[j], 'title': titles[feats[j]], 'group': groups[feats[j]],
+                'value': value_text(feats[j], top.at[i, feats[j]]),
                 'phi': round(float(contrib[i, j]), 4),
             } for j in usable],
         } for i in range(len(top))]

@@ -10,11 +10,14 @@ ENRICH_PIPELINE_LIVE=1 — в пайплайне тоже опрашивать �
 Только стандартная библиотека, как и весь web-service.
 """
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 
 from models import Candidate, Lot
+
+from . import new_pool
 
 API_URL = os.environ.get("ENRICH_API_URL", "http://127.0.0.1:8010").rstrip("/")
 TIMEOUT = float(os.environ.get("ENRICH_API_TIMEOUT", "60"))
@@ -118,14 +121,24 @@ def _apply(c: Candidate, card: dict) -> Candidate:
 
 def enrich(lot: Lot, candidates: list[Candidate]) -> list[Candidate]:
     inns = [c.supplier_inn for c in candidates if c.supplier_inn]
-    cards = fetch_cards(list(dict.fromkeys(inns))) if inns else {}
     smp_only = str(lot.notice.get("is_smp", "")).strip().lower() in ("true", "1", "да")
     result = []
-    for c in candidates:
-        card = cards.get(c.supplier_inn)
-        if card is None:
-            c.enrichment_status = "Нет данных в источниках"
-            result.append(c)
-        elif not _excluded(card["company"], smp_only):
-            result.append(_apply(c, card))
-    return result
+    try:
+        cards = fetch_cards(list(dict.fromkeys(inns))) if inns else {}
+    except EnrichmentError as e:
+        # Сервис обогащения недоступен: кандидаты модели без подтверждения, но новые компании из пула всё равно ищем
+        logging.warning("Обогащение лота %s: %s", lot.lot_id, e)
+        for c in candidates:
+            c.enrichment_status = "Источник недоступен — требуется проверка"
+            c.status = "Требует проверки"
+        result = list(candidates)
+    else:
+        for c in candidates:
+            card = cards.get(c.supplier_inn)
+            if card is None:
+                c.enrichment_status = "Нет данных в источниках"
+                result.append(c)
+            elif not _excluded(card["company"], smp_only):
+                result.append(_apply(c, card))
+    # «Непроверенные»: компании из открытых реестров, которых нет в истории закупок (integrations/new_pool.py)
+    return result + new_pool.find(lot, REGIONS, exclude=set(inns))

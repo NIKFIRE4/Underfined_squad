@@ -41,8 +41,13 @@ class Snapshot:
             'price_p90': g.price_log.quantile(0.9),
         })
         S['last_win'] = ev[ev.win == 1].groupby('sid').month.max()
+        # окна свежести: те же счётчики за последние месяцы перед срезом
+        for col, months, what in [('s_win_3m', 3, 'win'), ('s_win_6m', 6, 'win'), ('s_part_6m', 6, 'part')]:
+            w = ev[ev.month >= cutoff - months]
+            S[col] = w.groupby('sid').win.sum() if what == 'win' else w.groupby('sid').size()
         S = suppliers.set_index('sid')[['s_is_ip', 's_is_spb']].join(S, how='left')
-        S[['s_n_part', 's_n_win', 's_n_customers']] = S[['s_n_part', 's_n_win', 's_n_customers']].fillna(0)
+        cnt = ['s_n_part', 's_n_win', 's_n_customers', 's_win_3m', 's_win_6m', 's_part_6m']
+        S[cnt] = S[cnt].fillna(0)
         S = S.astype('float32')
 
         # поставщик × код ОКПД2 (все уровни) и число лотов по коду
@@ -50,6 +55,11 @@ class Snapshot:
         SK = ekm.groupby(['kid', 'sid']).agg(part=('part', 'sum'), win=('win', 'sum')).reset_index()
         lw = ekm[ekm.win > 0].groupby(['kid', 'sid']).month.max().rename('last_win')
         SK = SK.merge(lw, on=['kid', 'sid'], how='left')
+        recent = ekm[ekm.month >= cutoff - 6]
+        r6 = recent.groupby(['kid', 'sid']).agg(win_6m=('win', 'sum'), part_6m=('part', 'sum'))
+        r3 = recent[recent.month >= cutoff - 3].groupby(['kid', 'sid']).win.sum().rename('win_3m')
+        SK = SK.merge(r6.join(r3, how='left').reset_index(), on=['kid', 'sid'], how='left')
+        SK[['win_6m', 'part_6m', 'win_3m']] = SK[['win_6m', 'part_6m', 'win_3m']].fillna(0).astype('float32')
         KT = ds.key_month[ds.key_month.month < cutoff].groupby('kid').n_lots.sum().rename('kt').reset_index()
 
         topk = SK.assign(sc=SK.win + 0.2 * SK.part).sort_values(['kid', 'sc'], ascending=[True, False])
@@ -60,6 +70,9 @@ class Snapshot:
         SC = evc.groupby(['cid', 'sid']).agg(part=('win', 'size'), win=('win', 'sum')).reset_index()
         SC = SC.merge(evc[evc.win == 1].groupby(['cid', 'sid']).month.max().rename('last_win'),
                       on=['cid', 'sid'], how='left')
+        SC = SC.merge(evc[evc.month >= cutoff - 12].groupby(['cid', 'sid']).win.sum().rename('win_12m'),
+                      on=['cid', 'sid'], how='left')
+        SC['win_12m'] = SC.win_12m.fillna(0).astype('float32')
         SCC = evc[evc.mc >= 0].groupby(['cid', 'mc', 'sid']).agg(part=('win', 'size'), win=('win', 'sum')).reset_index()
         evd = ev[(ev.did >= 0) & (ev.mc >= 0)]
         SDC = evd.groupby(['did', 'mc', 'sid']).win.sum().reset_index()

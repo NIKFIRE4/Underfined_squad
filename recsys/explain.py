@@ -117,8 +117,11 @@ def _negative(name, r):
 
 
 COUNT = {'s_n_win', 's_n_part', 's_n_customers', 'code_win_l6', 'code_win_l5', 'code_win_l4', 'code_win_l3',
-         'code_part_l5', 'code_part_l3', 'cust_win', 'cust_part', 'cust_class_win', 'district_class_win'}
-SHARE = {'s_win_rate', 's_em_share', 'platform_fit', 'code_cover_l5', 'code_cover_l3', 'group_share'}
+         'code_part_l5', 'code_part_l3', 'cust_win', 'cust_part', 'cust_class_win', 'district_class_win',
+         's_win_3m', 's_win_6m', 's_part_6m', 'code_win_l5_6m', 'code_win_l3_6m', 'code_win_l3_3m', 'code_part_l3_6m',
+         'cust_win_12m'}
+SHARE = {'s_win_rate', 's_em_share', 'platform_fit', 'code_cover_l5', 'code_cover_l3', 'group_share',
+         'spec_l5', 'spec_l3', 'spec_part_l3', 'rel_code_win_l5', 'rel_code_win_l3', 'rel_code_win_l3_6m', 'rel_cust_win'}
 MONTHS = {'s_m_since_win', 's_m_since_part', 'code_m_since_win', 'cust_m_since_win'}
 
 
@@ -135,6 +138,8 @@ def value_text(name, v):
         return _months(v)
     if name in ('s_is_ip', 's_is_spb', 'price_in_range'):
         return 'да' if v == 1 else 'нет'
+    if name == 'rel_text':
+        return 'лучшее в лоте' if v >= -0.005 else f'на {abs(v):.2f} ниже лучшего'.replace('.', ',')
     if name == 'text_cos':
         return f'{v:.2f}'.replace('.', ',')
     if name == 'price_dev':
@@ -160,9 +165,9 @@ def status(r):
     return 'Новый в пуле', 'Нет истории закупок в данных'
 
 
-def explain(features_df, contrib, n_pos=3, n_neg=1):
-    """Причины для каждой строки. contrib — вклады из booster.predict(..., pred_contrib=True)."""
-    cols = list(FEATURES)
+def explain(features_df, contrib, cols=FEATURES, n_pos=3, n_neg=1):
+    """Причины для каждой строки. contrib — вклады из booster.predict(..., pred_contrib=True), cols — признаки модели."""
+    cols = list(cols)
     usable = np.array([GROUP[c] != 'лот' for c in cols])  # контекст лота одинаков для всех кандидатов
     out = []
     recs = features_df[cols].to_dict('records')

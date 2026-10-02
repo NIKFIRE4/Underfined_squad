@@ -37,27 +37,53 @@ FEATURE_SPEC = [
     ('cust_m_since_win', 'заказчик', 0, 'Месяцев с последней победы у этого заказчика'),
     ('district_class_win', 'заказчик', 1, 'Побед в классе ОКПД2 лота у заказчиков того же района'),
     ('text_cos', 'текст', 1, 'Сходство текста лота с его прошлыми лотами'),
+    # v2: свежесть — те же счётчики за последние месяцы перед лотом
+    ('s_win_3m', 'поставщик', 1, 'Побед за последние 3 месяца'),
+    ('s_win_6m', 'поставщик', 1, 'Побед за последние 6 месяцев'),
+    ('s_part_6m', 'поставщик', 0, 'Участий за последние 6 месяцев'),
+    ('code_win_l5_6m', 'ОКПД2', 1, 'Побед с тем же видом ОКПД2 за 6 месяцев'),
+    ('code_win_l3_6m', 'ОКПД2', 1, 'Побед с той же группой ОКПД2 за 6 месяцев'),
+    ('code_win_l3_3m', 'ОКПД2', 1, 'Побед с той же группой ОКПД2 за 3 месяца'),
+    ('code_part_l3_6m', 'ОКПД2', 0, 'Участий с той же группой ОКПД2 за 6 месяцев'),
+    ('cust_win_12m', 'заказчик', 1, 'Побед у этого заказчика за 12 месяцев'),
+    # v2: специализация — какая доля его побед приходится на коды лота
+    ('spec_l5', 'ОКПД2', 0, 'Доля его побед, приходящаяся на вид ОКПД2 лота'),
+    ('spec_l3', 'ОКПД2', 0, 'Доля его побед, приходящаяся на группу ОКПД2 лота'),
+    ('spec_part_l3', 'ОКПД2', 0, 'Доля его участий, приходящаяся на группу ОКПД2 лота'),
+    # v2: сравнение с остальными кандидатами того же лота
+    ('rel_code_win_l5', 'ОКПД2', 1, 'Победы с видом ОКПД2 лота относительно лучшего кандидата лота'),
+    ('rel_code_win_l3', 'ОКПД2', 1, 'Победы с группой ОКПД2 лота относительно лучшего кандидата лота'),
+    ('rel_code_win_l3_6m', 'ОКПД2', 1, 'Свежие победы с группой ОКПД2 относительно лучшего кандидата лота'),
+    ('rel_cust_win', 'заказчик', 1, 'Победы у заказчика относительно лучшего кандидата лота'),
+    ('rel_text', 'текст', 1, 'Сходство текста минус лучшее сходство среди кандидатов лота'),
 ]
+# Признаки первой модели (models/meta.json): модель берёт свой список признаков из meta, а не отсюда
+FEATURES_V1 = [f[0] for f in FEATURE_SPEC[:33]]
 FEATURES = [f[0] for f in FEATURE_SPEC]
 MONOTONE = [f[2] for f in FEATURE_SPEC]
 GROUP = {f[0]: f[1] for f in FEATURE_SPEC}
 TITLE = {f[0]: f[3] for f in FEATURE_SPEC}
 
 
+WINDOW_SK = ['win_6m', 'part_6m', 'win_3m']  # окна свежести в snap.SK; в срезах первой модели их нет
+
+
 def _code_features(snap, batch, pairs):
     pk = pairs[['lot_id', 'sid']].merge(batch.keys, on='lot_id')
     pk = pk.merge(snap.SK, on=['kid', 'sid'], how='left')
     pk['covered'] = (pk.part > 0).astype('int8')
+    windows = [c for c in WINDOW_SK if c in pk.columns]
     agg = pk.groupby(['lot_id', 'sid', 'level']).agg(
-        win=('win', 'max'), part=('part', 'max'), covered=('covered', 'sum'), last_win=('last_win', 'max'))
+        win=('win', 'max'), part=('part', 'max'), covered=('covered', 'sum'), last_win=('last_win', 'max'),
+        **{c: (c, 'max') for c in windows})
     nkeys = batch.keys.groupby(['lot_id', 'level']).size().rename('nk')
     agg = agg.join(nkeys, on=['lot_id', 'level'])
     agg['cover'] = agg.covered / agg.nk
-    wide = agg[['win', 'part', 'cover']].unstack('level')
+    wide = agg[['win', 'part', 'cover', *windows]].unstack('level')
     wide.columns = [f'code_{a}_l{b}' for a, b in wide.columns]
     wide['code_last_win'] = agg.last_win.groupby(['lot_id', 'sid']).max()
     for col in ['code_win_l6', 'code_win_l5', 'code_win_l4', 'code_win_l3', 'code_part_l5', 'code_part_l3',
-                'code_cover_l5', 'code_cover_l3']:
+                'code_cover_l5', 'code_cover_l3', 'code_win_6m_l5', 'code_win_6m_l3', 'code_win_3m_l3', 'code_part_6m_l3']:
         if col not in wide:
             wide[col] = np.nan
     return wide.reset_index()
@@ -77,7 +103,7 @@ def build_features(snap, batch, cands, chunk_lots=4000):
         mg = snap.SK[['kid', 'sid', 'win']].rename(columns={'kid': 'mg_kid', 'win': 'mg_win'})
         x = x.merge(mg, on=['mg_kid', 'sid'], how='left').merge(
             snap.KT.rename(columns={'kid': 'mg_kid'}), on='mg_kid', how='left')
-        x = x.merge(snap.SC.rename(columns={'part': 'cust_part', 'win': 'cust_win', 'last_win': 'cust_last_win'}),
+        x = x.merge(snap.SC.rename(columns={'part': 'cust_part', 'win': 'cust_win', 'last_win': 'cust_last_win', 'win_12m': 'cust_win_12m'}),
                     on=['cid', 'sid'], how='left')
         x = x.merge(snap.SCC[['cid', 'mc', 'sid', 'win']].rename(columns={'win': 'cust_class_win'}),
                     on=['cid', 'mc', 'sid'], how='left')
@@ -114,6 +140,29 @@ def build_features(snap, batch, cands, chunk_lots=4000):
         f['cust_m_since_win'] = cut - x.cust_last_win
         f['district_class_win'] = x.district_class_win.fillna(0)
         f['text_cos'] = np.einsum('ij,ij->i', b.vecs[x.row.values], snap.centroids[x.sid.values])
+
+        # v2: свежесть. В срезах первой модели окон нет — признаки NaN, первая модель их не использует
+        nan = pd.Series(np.nan, index=x.index)
+        f['s_win_3m'] = x.get('s_win_3m', nan)
+        f['s_win_6m'] = x.get('s_win_6m', nan)
+        f['s_part_6m'] = x.get('s_part_6m', nan)
+        has_win = 'win_6m' in snap.SK.columns
+        f['code_win_l5_6m'] = x.code_win_6m_l5.fillna(0) if has_win else nan
+        f['code_win_l3_6m'] = x.code_win_6m_l3.fillna(0) if has_win else nan
+        f['code_win_l3_3m'] = x.code_win_3m_l3.fillna(0) if has_win else nan
+        f['code_part_l3_6m'] = x.code_part_6m_l3.fillna(0) if has_win else nan
+        f['cust_win_12m'] = x.cust_win_12m.fillna(0) if 'cust_win_12m' in x else nan
+        # v2: специализация
+        f['spec_l5'] = f.code_win_l5 / f.s_n_win.where(f.s_n_win > 0)
+        f['spec_l3'] = f.code_win_l3 / f.s_n_win.where(f.s_n_win > 0)
+        f['spec_part_l3'] = f.code_part_l3 / f.s_n_part.where(f.s_n_part > 0)
+        # v2: сравнение с лучшим кандидатом того же лота
+        g = f.groupby('lot_id')
+        for col, src in [('rel_code_win_l5', 'code_win_l5'), ('rel_code_win_l3', 'code_win_l3'),
+                         ('rel_code_win_l3_6m', 'code_win_l3_6m'), ('rel_cust_win', 'cust_win')]:
+            best = g[src].transform('max')
+            f[col] = f[src] / best.where(best > 0)
+        f['rel_text'] = f.text_cos - g.text_cos.transform('max')
         out.append(f)
     res = pd.concat(out, ignore_index=True)
     res[FEATURES] = res[FEATURES].astype('float32')

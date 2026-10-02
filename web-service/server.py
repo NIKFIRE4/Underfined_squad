@@ -381,6 +381,9 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if getattr(recommender, "READY", False) and hasattr(recommender, "warmup"):
         threading.Thread(target=recommender.warmup, name="model-warmup", daemon=True).start()
+    if MODE == "live" and getattr(enricher, "READY", False):
+        # пул новых компаний для «Непроверенных» (~8 с), чтобы первый лот не ждал загрузки
+        threading.Thread(target=enricher.new_pool.pool, name="new-pool-warmup", daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Local URL: http://127.0.0.1:{args.port} | mode={MODE}", flush=True)
     try:
