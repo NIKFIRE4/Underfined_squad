@@ -23,3 +23,6 @@ class Candidate:
     reasons: list[str] = field(default_factory=list)
     sources: list[dict[str, str]] = field(default_factory=list)
     enrichment_status: str = "Не обогащено"
+    # Разбор оценки модели для интерфейса: {"p_win", "score", "factors": [{feature, title, group, value, phi}]}.
+    # В CSV не выгружается.
+    explanation: dict = field(default_factory=dict)

@@ -1,34 +1,200 @@
 <!doctype html>
 <html lang="ru">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Локальный подбор поставщиков по извещениям и позициям ТРУ.">
-<title>Undefined squad — подбор поставщиков</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles.css"><script src="/file-selection.js" defer></script><script src="/app.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Подбор поставщиков по извещениям о закупках и позициям ТРУ.">
+<title>Подбор поставщиков — Undefined squad</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/onest-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/styles.css">
+<script src="/file-selection.js" defer></script>
+<script src="/app.js" defer></script>
 </head>
-<body>
-<a class="skip" href="#main">Перейти к загрузке</a>
-<header class="site-header"><div class="header-inner"><a class="wordmark" href="/" aria-label="Undefined squad — главная">Undefined squad</a></div></header>
-<main id="main">
-<div class="page-heading"><h1>Подбор поставщиков</h1></div>
-<div class="error-box" id="error" role="alert" hidden></div>
-<section class="upload-panel" aria-labelledby="upload-heading">
-<div class="section-heading"><h2 id="upload-heading">Файлы закупок</h2><span id="file-counter" class="file-counter">0 из 2</span></div>
-<div class="single-upload">
-<label class="drop-zone" id="zone-csv" for="file-csv">
-<input type="file" id="file-csv" aria-label="Загрузить Извещения и ТРУ" accept=".csv,text/csv" multiple aria-describedby="upload-hint">
-<span class="file-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H5v18h14V8zM14 3v5h5M8 13h8M8 17h5"/></svg></span>
-<span class="file-content"><strong id="upload-label">Загрузить CSV-файлы</strong><span id="upload-hint">Извещения и ТРУ — выберите или перетащите оба файла</span></span>
-<span class="file-limit">до 512 МБ</span>
-</label>
-<div class="selected-files" aria-live="polite">
-<div class="selected-file" id="selected-notices" hidden><span class="selected-kind">Извещения</span><span class="selected-name" id="name-notices"></span><span class="selected-size" id="meta-notices"></span><button class="text-button remove" id="remove-notices" aria-label="Убрать файл Извещения">Убрать</button></div>
-<div class="selected-file" id="selected-items" hidden><span class="selected-kind">ТРУ</span><span class="selected-name" id="name-items"></span><span class="selected-size" id="meta-items"></span><button class="text-button remove" id="remove-items" aria-label="Убрать файл ТРУ">Убрать</button></div>
-</div>
-</div>
-<div class="form-utility"><details><summary>Требования к CSV</summary><div class="format-content"><p>Файлы связываются по <code>lot_id</code>. Первая строка — названия столбцов. В извещениях можно использовать <code>procedure_name</code> вместо <code>subject</code>.</p><p>Кодировка UTF-8 или Windows-1251; разделитель — точка с запятой или запятая. Идентификаторы читаются как текст.</p><div class="sample-downloads"><a href="/api/examples/notices" download>Скачать пример извещений</a><a href="/api/examples/items" download>Скачать пример ТРУ</a></div></div></details><button id="examples" class="text-button">Подставить пример</button></div>
-<div class="form-bottom"><div class="settings"><label for="top-k">Поставщиков на лот</label><select id="top-k"><option>3</option><option>5</option><option selected>10</option><option>20</option><option>50</option></select><span>максимум</span></div><div class="action-area"><button class="primary" id="start" disabled>Сформировать «Поставщики»</button><p id="action-hint">Сначала добавьте оба файла</p></div></div>
-</section>
-<section class="progress-panel" id="progress-panel" aria-labelledby="progress-heading" hidden><div class="progress-top"><h2 id="progress-heading">Загружаем файлы…</h2><span id="progress-value">0%</span></div><progress id="progress-bar" max="100" value="0" aria-label="Ход обработки"></progress><p id="progress-detail" role="status" aria-live="polite">Подготавливаем данные</p><button class="text-button" id="reconnect" hidden>Проверить статус</button></section>
-<section class="results-panel" id="results" aria-labelledby="results-heading" hidden><div class="results-heading"><div><h2 id="results-heading">Поставщики</h2><p id="result-caption"></p></div><div class="result-actions"><button id="reset" class="secondary">Новая загрузка</button><a id="download" class="primary" href="#" download>Скачать CSV</a></div></div><p class="demo-warning" id="result-demo" hidden>Демонстрационный результат. Компании и оценки вымышлены; модель и открытые источники не использовались.</p><div class="stats" id="stats"></div><div id="warnings" role="status"></div><div class="table-wrap" tabindex="0" role="region" aria-label="Таблица поставщиков"><table><caption class="sr-only">Рекомендованные поставщики</caption><thead><tr><th>Лот</th><th>Поставщик</th><th>Роль</th><th>Оценка</th><th>Обогащение</th><th><span class="sr-only">Подробности</span></th></tr></thead><tbody id="result-rows"></tbody></table></div><div class="supplier-details" id="details" hidden><div class="details-heading"><h3 id="details-title">Поставщик</h3><button id="close-details" class="text-button">Свернуть</button></div><div id="details-body"></div></div><p id="preview-caption" class="preview-caption"></p></section>
+<body data-view="upload">
+<a class="skip" href="#main">Перейти к содержимому</a>
+
+<header class="topbar">
+  <a class="brand" href="/">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9.5 8.5v9.5a6.5 6.5 0 0 0 13 0V8.5h-3.6V18a2.9 2.9 0 0 1-5.8 0V8.5z" fill="#fff"/></svg>
+    <span>Undefined squad</span>
+  </a>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <!-- 1. Загрузка -->
+  <section class="view" id="view-upload" aria-labelledby="upload-title">
+    <div class="hero hero-screen hero-upload" id="dropzone">
+      <!-- Орбита подбора: лот в центре, поставщики на кольцах — чем ближе, тем выше ранг.
+           app.js копирует её в остальные экраны (элементы с data-orbit). -->
+      <div class="art" aria-hidden="true">
+      <svg class="orbit" id="orbit" viewBox="0 0 800 800">
+        <g class="orbit-rings">
+          <circle cx="400" cy="400" r="70"/>
+          <circle cx="400" cy="400" r="140"/>
+          <circle cx="400" cy="400" r="220" class="dashed"/>
+          <circle cx="400" cy="400" r="310"/>
+          <circle cx="400" cy="400" r="398"/>
+        </g>
+        <circle class="orbit-sweep" cx="400" cy="400" r="310"/>
+        <g class="orbit-spin spin-a">
+          <circle cx="616.7" cy="438.2" r="4"/><circle cx="183.3" cy="438.2" r="3"/><circle cx="324.8" cy="193.3" r="5"/>
+        </g>
+        <g class="orbit-spin spin-b">
+          <circle cx="668.5" cy="555" r="4"/><circle cx="373" cy="708.8" r="3"/><circle cx="162.5" cy="599.3" r="4"/>
+          <circle cx="146.1" cy="222.2" r="3"/><circle cx="555" cy="131.5" r="5"/><circle cx="699.4" cy="319.8" r="3"/>
+        </g>
+        <g class="orbit-spin spin-c">
+          <circle cx="775.9" cy="536.8" r="3"/><circle cx="536.8" cy="775.9" r="4"/><circle cx="24.1" cy="536.8" r="3"/>
+          <circle cx="170.6" cy="72.4" r="4"/><circle cx="469.5" cy="6.1" r="3"/><circle cx="706.4" cy="142.9" r="3"/>
+        </g>
+        <g class="orbit-links">
+          <path d="M400 400 470 278.8"/><path d="M400 400 507.2 490"/><path d="M400 400 619.2 380.8"/>
+        </g>
+        <circle class="orbit-pulse" cx="400" cy="400" r="30"/>
+        <circle class="orbit-core" cx="400" cy="400" r="30"/>
+        <path class="orbit-doc" d="M388 391h24M388 400h24M388 409h13"/>
+        <g class="orbit-rank r1">
+          <circle class="halo" cx="470" cy="278.8" r="30"/>
+          <circle cx="470" cy="278.8" r="19"/><text x="470" y="278.8">1</text>
+          <text class="score" x="508" y="278.8">0,94</text>
+        </g>
+        <g class="orbit-rank r2">
+          <circle cx="507.2" cy="490" r="16"/><text x="507.2" y="490">2</text>
+          <text class="score" x="533" y="490">0,88</text>
+        </g>
+        <g class="orbit-rank r3">
+          <circle cx="619.2" cy="380.8" r="16"/><text x="619.2" y="380.8">3</text>
+          <text class="score" x="645" y="380.8">0,81</text>
+        </g>
+      </svg>
+      </div>
+
+      <div class="screen-body landing">
+        <h1 id="upload-title">Поставщики<br>для каждого лота</h1>
+        <p class="landing-lead">Загрузите извещения и позиции ТРУ — модель подберёт и ранжирует поставщиков.</p>
+
+        <div class="landing-action">
+          <button class="btn btn-upload" id="pick" type="button">
+            <span id="pick-label">Загрузить файлы</span>
+            <span class="btn-orb" aria-hidden="true"><svg class="icon" viewBox="0 0 16 16"><path d="M8 13V3M3.75 7.25 8 3l4.25 4.25"/></svg></span>
+          </button>
+          <p class="landing-hint" id="pick-hint">или перетащите их в окно</p>
+        </div>
+
+        <ul class="slots" id="tray" aria-label="Выбранные файлы" aria-live="polite" hidden></ul>
+
+        <div class="alert alert-error" id="upload-error" role="alert" hidden>
+          <p id="upload-error-text"></p>
+          <button class="btn btn-sm" id="retry" type="button" hidden>Повторить</button>
+        </div>
+      </div>
+
+      <div class="screen-foot">
+        <span>CSV или Excel, до <span class="file-limit">512</span> МБ</span>
+        <button class="link-btn" id="examples" type="button">Запустить на примере</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Обработка -->
+  <section class="view" id="view-progress" aria-labelledby="progress-title" hidden>
+    <div class="hero hero-screen hero-stage" id="progress-hero" data-stage="upload">
+      <div class="art" data-orbit aria-hidden="true"></div>
+      <div class="screen-body progress-wrap">
+        <h1 id="progress-title" class="sr-only">Обработка файлов</h1>
+        <p class="progress-value" id="progress-value" aria-hidden="true">0%</p>
+        <p class="progress-message" id="progress-message" role="status" aria-live="polite">Готовим загрузку…</p>
+        <div class="bar" role="progressbar" aria-labelledby="progress-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress-bar"><span class="bar-fill" id="progress-fill"></span></div>
+        <ol class="stepper" id="stages">
+          <li data-stage="upload"><span class="step-dot" aria-hidden="true"></span><span class="step-label">Загрузка</span><span class="step-note" id="stage-upload-note"></span></li>
+          <li data-stage="check"><span class="step-dot" aria-hidden="true"></span><span class="step-label">Проверка данных</span><span class="step-note" id="stage-check-note"></span></li>
+          <li data-stage="recommendation"><span class="step-dot" aria-hidden="true"></span><span class="step-label">Ранжирование</span><span class="step-note" id="stage-recommendation-note"></span></li>
+          <li data-stage="export"><span class="step-dot" aria-hidden="true"></span><span class="step-label">Результат</span><span class="step-note"></span></li>
+        </ol>
+        <div class="alert alert-on-blue" id="progress-error" role="alert" hidden>
+          <p id="progress-error-text"></p>
+          <button class="btn btn-sm btn-white" id="reconnect" type="button">Проверить статус</button>
+        </div>
+      </div>
+      <div class="screen-foot"><span class="progress-files" id="progress-files"></span></div>
+    </div>
+  </section>
+
+  <!-- 3. Результат -->
+  <section class="view" id="view-results" aria-labelledby="results-title" hidden>
+    <div class="hero hero-results">
+      <div class="art" data-orbit aria-hidden="true"></div>
+      <div class="results-inner">
+        <div class="results-head">
+          <div>
+            <h1 id="results-title">Результат подбора</h1>
+            <p class="results-files" id="results-files"></p>
+          </div>
+          <div class="results-actions">
+            <a class="btn btn-white" id="download" href="#" download>
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M2.5 10v2.25c0 .69.56 1.25 1.25 1.25h8.5c.69 0 1.25-.56 1.25-1.25V10"/></svg>
+              Скачать CSV
+            </a>
+            <button class="btn btn-on-blue" id="new-upload" type="button">Новая загрузка</button>
+          </div>
+        </div>
+        <dl class="summary" id="summary"></dl>
+      </div>
+    </div>
+
+    <div class="results-body">
+      <div class="alert alert-info" id="demo-note" hidden><p>Демо-режим: компании и оценки вымышлены, модель и открытые источники не вызывались. Рабочий режим включается переменной <code>PIPELINE_MODE=live</code>.</p></div>
+      <div class="alert alert-warning" id="warnings" hidden></div>
+
+      <div class="toolbar">
+        <div class="segmented" role="tablist" aria-label="Список поставщиков" id="segmented">
+          <button role="tab" type="button" id="tab-verified" data-group="verified" aria-selected="true" aria-controls="workspace">Проверенные <span class="count" id="count-verified">0</span></button>
+          <button role="tab" type="button" id="tab-unverified" data-group="unverified" aria-selected="false" aria-controls="workspace" tabindex="-1">Непроверенные <span class="count" id="count-unverified">0</span></button>
+        </div>
+        <p class="group-caption" id="group-caption"></p>
+        <label class="search">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg>
+          <span class="sr-only">Поиск</span>
+          <input type="search" id="search" placeholder="Лот, предмет, поставщик или ИНН" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="workspace" id="workspace" role="tabpanel" aria-labelledby="tab-verified">
+        <nav class="lots" aria-label="Лоты">
+          <p class="lots-head" id="lots-count">Лоты</p>
+          <ul class="lots-list" id="lots-list"></ul>
+          <button class="btn btn-sm btn-soft lots-more" id="lots-more" type="button" hidden>Показать ещё</button>
+        </nav>
+        <div class="lot-detail" id="lot-detail" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
 </main>
-</body></html>
+
+<div class="drop-overlay" id="drop-overlay" hidden><p>Отпустите, чтобы загрузить файлы</p></div>
+
+<div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+<aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+  <header class="sheet-head">
+    <div class="sheet-top">
+      <p class="sheet-context" id="sheet-context"></p>
+      <button class="icon-btn icon-btn-on-blue" id="sheet-close" type="button" aria-label="Закрыть">
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+      </button>
+    </div>
+    <div class="sheet-title-row">
+      <div class="sheet-heading">
+        <h2 id="sheet-title">Поставщик</h2>
+        <div class="sheet-ids" id="sheet-ids"></div>
+      </div>
+      <div class="sheet-score" id="sheet-score"></div>
+    </div>
+  </header>
+  <div class="sheet-body" id="sheet-body"></div>
+</aside>
+
+<input type="file" id="file-input" multiple accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+</body>
+</html>

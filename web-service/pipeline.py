@@ -67,7 +67,11 @@ def safe_cell(value):
 def demo_recommend(lot, top_k):
     names = ["ДЕМО · Северный поставщик", "ДЕМО · Балтийский производитель", "ДЕМО · Городской дистрибьютор"]
     roles = ["Поставщик-исполнитель", "Производитель", "Дистрибьютор"]
-    return [Candidate(supplier_name=n, score=92-i*7, role=roles[i], status="Вымышленная компания", region="Санкт-Петербург", reasons=["Демонстрационная строка для проверки интерфейса", "Релевантность моделью не рассчитана"], enrichment_status="Демо: источники не запрашивались") for i, n in enumerate(names[:top_k])]
+    verified = [Candidate(supplier_name=n, score=92-i*7, role=roles[i], status="Вымышленная компания", region="Санкт-Петербург", reasons=["Демонстрационная строка для проверки интерфейса", "Релевантность моделью не рассчитана"], enrichment_status="Демо: источники не запрашивались") for i, n in enumerate(names[:top_k])]
+    # «Непроверенные»: так в рабочем режиме выглядят новые компании из обогащения — моделью они не оцениваются
+    new_names = ["ДЕМО · Новая компания из реестра МСП", "ДЕМО · Новый производитель по ОКПД2"]
+    unverified = [Candidate(supplier_name=n, score=60-i*6, role=roles[i % 3], status="Новый в пуле", region="Ленинградская область", is_new=True, reasons=["Демо: найдена по коду ОКПД2 лота в открытом реестре", "Истории закупок нет — моделью не оценивалась"], enrichment_status="Демо: источники не запрашивались") for i, n in enumerate(new_names[:top_k])]
+    return verified + unverified
 
 
 def validate_candidates(candidates, mode):
@@ -88,6 +92,8 @@ def validate_candidates(candidates, mode):
             raise ValueError("reasons должен быть списком строк")
         if not isinstance(c.sources, list) or any(not isinstance(s, dict) for s in c.sources):
             raise ValueError("sources должен быть списком объектов")
+        if not isinstance(c.explanation, dict):
+            raise ValueError("explanation должен быть объектом")
         key = c.supplier_inn or c.supplier_name
         if key not in seen:
             result.append(c)
@@ -97,7 +103,7 @@ def validate_candidates(candidates, mode):
 
 def run_pipeline(folder: Path, mode: str, top_k: int, update):
     warnings = []
-    stats = {"notices": 0, "items": 0, "lots": 0, "recommendations": 0, "without_items": 0, "without_candidates": 0, "enrichment_errors": 0, "skipped_items": 0}
+    stats = {"notices": 0, "items": 0, "lots": 0, "recommendations": 0, "verified": 0, "unverified": 0, "without_items": 0, "without_candidates": 0, "enrichment_errors": 0, "skipped_items": 0}
     preview = []
     formats = {}
     with closing(sqlite3.connect(folder / "input.sqlite")) as db, db:
@@ -135,17 +141,17 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
         if stats["skipped_items"]:
             warnings.append(f'Пропущено строк ТРУ без названия и кода ОКПД2: {stats["skipped_items"]}. Остальные позиции включены в подбор.')
         update(progress=43, message="Файлы проверены", stats=dict(stats), warnings=warnings)
-        with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f:
+        with (folder / "result.part").open("w", encoding="utf-8-sig", newline="") as f, (folder / "lots.part").open("w", encoding="utf-8") as lots_out:
             writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS, delimiter=";")
             writer.writeheader()
             cursor = db.execute("SELECT n.lot_id,n.data FROM notices n WHERE EXISTS (SELECT 1 FROM items i WHERE i.lot_id=n.lot_id) ORDER BY n.rowid")
             for index, (lot_id, data) in enumerate(cursor, 1):
                 lot = Lot(lot_id, json.loads(data), [json.loads(r[0]) for r in db.execute("SELECT data FROM items WHERE lot_id=?", (lot_id,))])
-                if index == 1 or index % 50 == 0:
+                if stats["lots"] <= 500 or index == 1 or index % 50 == 0:  # мелкие наборы — прогресс по каждому лоту
                     update(stage="recommendation", progress=45+int(49*(index-1)/stats["lots"]), message=f'Подбираем поставщиков: лот {index} из {stats["lots"]}', stats=dict(stats))
                 candidates = demo_recommend(lot, top_k) if mode == "demo" else recommender.recommend(lot, top_k)
                 candidates = validate_candidates(candidates, mode)
-                if mode == "live":
+                if mode == "live" and getattr(enricher, "READY", False):
                     try:
                         import copy
                         enriched = enricher.enrich(lot, copy.deepcopy(candidates))
@@ -156,22 +162,37 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                             c.status = "Требует проверки"
                     else:
                         candidates = validate_candidates(enriched, mode)
-                candidates = candidates[:top_k]
-                if not candidates:
+                # Два независимых списка по top_k: «проверенные» ранжирует модель по истории закупок,
+                # «непроверенные» — новые компании из обогащения, моделью не оценивались (is_new=True).
+                groups = {"verified": [c for c in candidates if not c.is_new][:top_k],
+                          "unverified": [c for c in candidates if c.is_new][:top_k]}
+                if not groups["verified"] and not groups["unverified"]:
                     stats["without_candidates"] += 1
-                for rank, candidate in enumerate(candidates, 1):
-                    row = {"lot_id": lot_id, "subject": lot.notice["subject"], "rank": rank, **asdict(candidate), "is_demo": mode == "demo"}
-                    if len(preview) < 100:
-                        preview.append(row)
-                    exported = dict(row)
-                    exported["reasons"] = " | ".join(row["reasons"])
-                    exported["sources"] = json.dumps(row["sources"], ensure_ascii=False)
-                    writer.writerow({k: safe_cell(v) for k, v in exported.items()})
-                    stats["recommendations"] += 1
+                card = {"lot_id": lot_id, "subject": lot.notice["subject"], "start_price": lot.notice.get("start_price", ""),
+                        "is_smp": lot.notice.get("is_smp", ""), "items_total": len(lot.items),
+                        "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", "")} for i in lot.items[:30]]}
+                for group, chosen in groups.items():
+                    card[group] = []
+                    for rank, candidate in enumerate(chosen, 1):
+                        row = {"lot_id": lot_id, "subject": lot.notice["subject"], "rank": rank, **asdict(candidate), "is_demo": mode == "demo"}
+                        card[group].append({k: v for k, v in row.items() if k not in ("lot_id", "subject")})
+                        row.pop("explanation")  # разбор оценки — только в lots.jsonl для карточки, не в CSV
+                        if len(preview) < 100:
+                            preview.append(row)
+                        exported = dict(row)
+                        exported["reasons"] = " | ".join(row["reasons"])
+                        exported["sources"] = json.dumps(row["sources"], ensure_ascii=False)
+                        writer.writerow({k: safe_cell(v) for k, v in exported.items()})
+                        stats["recommendations"] += 1
+                        stats[group] += 1
+                lots_out.write(json.dumps(card, ensure_ascii=False) + "\n")
+        if mode == "live" and not getattr(enricher, "READY", False):
+            warnings.append("Обогащение не подключено: вместо названий показаны ИНН, новые компании из реестров не искались.")
         if stats["enrichment_errors"]:
             warnings.append(f'Не удалось обогатить лотов: {stats["enrichment_errors"]}. Данные источников не подтверждены.')
         if stats["without_candidates"]:
             warnings.append(f'Для {stats["without_candidates"]} лотов кандидаты не найдены.')
         update(stage="export", progress=97, message="Сохраняем файл «Поставщики»…")
         (folder / "result.part").replace(folder / "suppliers.csv")
+        (folder / "lots.part").replace(folder / "lots.jsonl")
         update(status="completed", stage="completed", progress=100, message="Файл «Поставщики» готов", stats=stats, warnings=warnings, preview=preview, formats=formats)

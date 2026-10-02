@@ -15,8 +15,12 @@ class PipelineTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.folder = Path(self.temp.name)
         self.state = {}
+        # адаптер обогащения в репозитории — заглушка; в тестах live-режима считаем его подключённым
+        self.enricher_ready = patch('pipeline.enricher.READY', True)
+        self.enricher_ready.start()
 
     def tearDown(self):
+        self.enricher_ready.stop()
         self.temp.cleanup()
 
     def inputs(self, notices='lot_id;subject\n0001;Медизделия\n', items='lot_id;product_name;okpd2_code\n0001;Шприц;32.50\n', encoding='utf-8-sig'):
@@ -31,12 +35,19 @@ class PipelineTests(unittest.TestCase):
         self.inputs()
         result = self.run_job(top_k=2)
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['stats']['recommendations'], 2)
+        # top_k действует отдельно на «проверенных» (модель) и «непроверенных» (новые из обогащения)
+        self.assertEqual((result['stats']['verified'], result['stats']['unverified'], result['stats']['recommendations']), (2, 2, 4))
         self.assertEqual(result['preview'][0]['lot_id'], '0001')
         self.assertTrue(result['preview'][0]['is_demo'])
         content = (self.folder/'suppliers.csv').read_bytes()
         self.assertTrue(content.startswith(b'\xef\xbb\xbf'))
-        self.assertEqual(len(list(csv.DictReader(io.StringIO(content.decode('utf-8-sig')), delimiter=';'))), 2)
+        self.assertEqual(len(list(csv.DictReader(io.StringIO(content.decode('utf-8-sig')), delimiter=';'))), 4)
+        lots = [json.loads(line) for line in (self.folder/'lots.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(len(lots), 1)
+        self.assertEqual(lots[0]['lot_id'], '0001')
+        self.assertEqual([c['rank'] for c in lots[0]['verified']], [1, 2])
+        self.assertTrue(all(c['is_new'] for c in lots[0]['unverified']))
+        self.assertEqual(lots[0]['items'], [{'name': 'Шприц', 'okpd2': '32.50'}])
 
     def test_cp1251_comma_and_procedure_alias(self):
         self.inputs('lot_id,procedure_name\n001,Поставка\n','lot_id,product_name,okpd2_code\n001,Бумага,17.12\n', 'cp1251')
@@ -88,9 +99,10 @@ class PipelineTests(unittest.TestCase):
         added = Candidate('Два','0000000002',score=90, is_new=True)
         with patch('pipeline.recommender.recommend',return_value=[base]), patch('pipeline.enricher.enrich',return_value=[added,base,base]):
             result = self.run_job('live', 1)
-        self.assertEqual(result['preview'][0]['supplier_name'],'Два')
+        # новая компания со скором выше не вытесняет кандидата модели: у каждого списка свой top_k
+        self.assertEqual([(r['supplier_name'], r['rank'], r['is_new']) for r in result['preview']], [('Один', 1, False), ('Два', 1, True)])
         self.assertFalse(result['preview'][0]['is_demo'])
-        self.assertEqual(result['stats']['recommendations'],1)
+        self.assertEqual(result['stats']['recommendations'],2)
 
     def test_enrichment_outage_keeps_unverified_candidates(self):
         self.inputs()
@@ -99,6 +111,15 @@ class PipelineTests(unittest.TestCase):
             result=self.run_job('live')
         self.assertEqual(result['stats']['enrichment_errors'],1)
         self.assertEqual(result['preview'][0]['status'],'Требует проверки')
+
+    def test_live_without_enrichment_uses_model_only(self):
+        self.inputs()
+        base = Candidate('0000000001','0000000001',score=40)
+        with patch('pipeline.enricher.READY', False), patch('pipeline.recommender.recommend',return_value=[base]), patch('pipeline.enricher.enrich') as enrich:
+            result = self.run_job('live')
+        enrich.assert_not_called()
+        self.assertEqual(result['stats']['verified'], 1)
+        self.assertTrue(any('Обогащение не подключено' in w for w in result['warnings']))
 
     def test_no_candidates_is_valid(self):
         self.inputs()

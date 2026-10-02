@@ -12,8 +12,9 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from inputs import prepare_sources
 from pipeline import run_pipeline
 from integrations import recommender, enricher, analysis
 
@@ -24,6 +25,8 @@ MODE = os.environ.get("PIPELINE_MODE", "demo")
 JOBS = {}
 LOCK = threading.RLock()
 POOL = ThreadPoolExecutor(max_workers=1)
+UPLOAD_EXT = (".csv", ".xlsx")
+MAX_SOURCES = 4
 
 
 def update_job(job_id, **changes):
@@ -39,8 +42,12 @@ def worker(job_id):
     job = JOBS[job_id]
     update_job(job_id, status="processing")
     try:
+        sources = {k: v for k, v in job["files"].items() if k.startswith("src-")}
+        if sources:
+            update_job(job_id, stage="reading", progress=2, message="Читаем файлы…")
+            update_job(job_id, detected=prepare_sources(DATA / job_id, sources, lambda **kw: update_job(job_id, **kw)))
         run_pipeline(DATA / job_id, job["mode"], job["top_k"], lambda **kw: update_job(job_id, **kw))
-    except (ValueError, UnicodeError, csv.Error) as exc:
+    except (ValueError, UnicodeError, csv.Error, OSError) as exc:
         update_job(job_id, status="failed", stage="failed", message=str(exc))
     except Exception:
         logging.exception("Job %s failed", job_id)
@@ -95,6 +102,38 @@ class Handler(BaseHTTPRequestHandler):
         with path.open("rb") as f:
             shutil.copyfileobj(f, self.wfile, 1024*1024)
 
+    def reply_lots(self, job, query):
+        """Результат по лотам для интерфейса: постранично, с поиском по лоту, предмету, названию и ИНН."""
+        path = DATA / job["id"] / "lots.jsonl"
+        if job["status"] != "completed":
+            self.reply(409, {"error": "Результат ещё не готов"})
+            return
+        if not path.is_file():
+            self.reply(404, {"error": "Результат сохранён в старом формате, доступен только CSV"})
+            return
+        try:
+            offset = max(0, int(query.get("offset", ["0"])[0]))
+            limit = min(200, max(1, int(query.get("limit", ["50"])[0])))
+        except ValueError:
+            self.reply(400, {"error": "offset и limit — целые числа"})
+            return
+        needle = query.get("q", [""])[0].strip().lower()[:200]
+        lots, matched = [], 0
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                lot = None
+                if needle:
+                    lot = json.loads(line)
+                    hay = " ".join([lot["lot_id"], lot["subject"]] + [c["supplier_name"] + " " + c["supplier_inn"] for g in ("verified", "unverified") for c in lot[g]]).lower()
+                    if needle not in hay:
+                        continue
+                if matched >= offset and len(lots) < limit:
+                    lots.append(lot or json.loads(line))
+                matched += 1
+                if matched > offset + limit:
+                    break
+        self.reply(200, {"offset": offset, "lots": lots, "has_more": matched > offset + len(lots), "total": None if needle else job.get("stats", {}).get("lots")})
+
     def do_GET(self):
         if not self.safe_origin():
             self.reply(403, {"error": "Доступ разрешён только с локального адреса сервиса"})
@@ -104,19 +143,37 @@ class Handler(BaseHTTPRequestHandler):
         if route in static:
             name, mime = static[route]
             self.serve_file(ROOT / "web" / name, mime)
+        elif re.fullmatch(r"/fonts/[a-z0-9-]+\.woff2", route):
+            self.serve_file(ROOT / "web" / route.lstrip("/"), "font/woff2")
         elif route == "/api/health":
             self.reply(200, {"status": "ok", "mode": MODE, "recommender_ready": recommender.READY, "enricher_ready": enricher.READY, "max_file_bytes": MAX_FILE, "analyze_configured": analysis.configured()})
+        elif match := re.fullmatch(r"/api/suppliers/(\d{10}|\d{12})/card", route):
+            # Карточка компании из сервиса обогащения (enrichment-api): реквизиты, финансы, риски, контакты, источники
+            if not enricher.READY:
+                self.reply(503, {"error": "Сервис обогащения не подключён (ENRICH_API_URL)"})
+                return
+            refresh = parse_qs(urlparse(self.path).query).get("refresh", [""])[0] == "true"
+            try:
+                self.reply(200, enricher.fetch_card(match[1], refresh))
+            except enricher.EnrichmentError as exc:
+                self.reply(exc.status if exc.status in (400, 404) else 502, {"error": str(exc)})
+        elif match := re.fullmatch(r"/api/suppliers/(\d{10}|\d{12})/stats", route):
+            # Статистика поставщика (успешные контракты, характеристики) — отдельный сервис, подключается позже.
+            # Контракт ответа описан в INTEGRATION.md; пока available=false, и интерфейс показывает заглушку.
+            self.reply(200, {"inn": match[1], "available": False})
         elif route in ("/api/examples/notices", "/api/examples/items"):
             name = "notices.csv" if route.endswith("notices") else "items.csv"
             self.serve_file(ROOT / "examples" / name, "text/csv; charset=utf-8", name)
         else:
-            match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/download)?", route)
+            match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/download|/lots)?", route)
             if not match or match[1] not in JOBS:
                 self.reply(404, {"error": "Задача не найдена"})
                 return
             with LOCK:
                 job = dict(JOBS[match[1]])
-            if match[2]:
+            if match[2] == "/lots":
+                self.reply_lots(job, parse_qs(urlparse(self.path).query))
+            elif match[2]:
                 if job["status"] != "completed":
                     self.reply(409, {"error": "Файл ещё не готов"})
                 else:
@@ -167,8 +224,9 @@ class Handler(BaseHTTPRequestHandler):
                 top_k = payload.get("top_k", 10)
                 if type(top_k) is not int or not 1 <= top_k <= 50:
                     raise ValueError("top_k должен быть целым числом от 1 до 50")
-                if MODE == "live" and not (recommender.READY and enricher.READY):
-                    self.reply(503, {"error": "Модель и обогащение ещё не подключены. См. INTEGRATION.md"})
+                # Обогащение необязательно: без него модель работает, но названия и новые компании не подставляются
+                if MODE == "live" and not recommender.READY:
+                    self.reply(503, {"error": "Модель ещё не подключена. См. INTEGRATION.md"})
                     return
                 job_id = uuid.uuid4().hex
                 (DATA / job_id).mkdir(parents=True)
@@ -184,8 +242,10 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 job_id = match[1]
                 job = JOBS[job_id]
-                if job["status"] != "uploading" or set(job["files"]) != {"notices", "items"}:
-                    self.reply(409, {"error": "Загрузите оба файла; повторный запуск задачи недоступен"})
+                files = job["files"]
+                ready = set(files) == {"notices", "items"} or (files and all(k.startswith("src-") for k in files))
+                if job["status"] != "uploading" or not ready:
+                    self.reply(409, {"error": "Загрузите файлы извещений и ТРУ; повторный запуск задачи недоступен"})
                     return
                 if any(j["status"] in {"queued", "processing"} for j in JOBS.values()):
                     self.reply(409, {"error": "Сервер обрабатывает другую задачу. Повторите запуск после её завершения."})
@@ -203,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": str(exc)})
 
     def do_PUT(self):
-        match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})/files/(notices|items)", urlparse(self.path).path)
+        match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})/files/(notices|items|auto)", urlparse(self.path).path)
         if not self.safe_origin():
             self.close_connection = True
             self.reply(403, {"error": "Недопустимый источник запроса"})
@@ -218,10 +278,21 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Transfer-Encoding") or not 0 < size <= MAX_FILE:
                 raise ValueError(f"Файл должен быть непустым, не больше {MAX_FILE // 1024 // 1024} МБ")
             filename = unquote(self.headers.get("X-Filename", "file.csv"))
-            if not filename.lower().endswith(".csv"):
-                raise ValueError("Поддерживаются только файлы .csv")
+            ext = Path(filename.lower()).suffix
+            if ext == ".xls":
+                raise ValueError("Формат .xls не поддерживается. Сохраните книгу как .xlsx или CSV.")
+            if ext not in (UPLOAD_EXT if kind == "auto" else (".csv",)):
+                raise ValueError("Поддерживаются файлы .csv и .xlsx" if kind == "auto" else "Поддерживаются только файлы .csv")
             with LOCK:
-                if JOBS[job_id]["status"] != "uploading" or kind in JOBS[job_id]["files"]:
+                files = JOBS[job_id]["files"]
+                if kind == "auto":
+                    # Тип файла (извещения/ТРУ) определит сервер по столбцам при запуске
+                    if any(not k.startswith("src-") for k in files) or len(files) >= MAX_SOURCES:
+                        raise ValueError(f"В одну задачу можно загрузить не больше {MAX_SOURCES} файлов")
+                    kind = f"src-{len(files) + 1}"
+                elif any(k.startswith("src-") for k in files):
+                    raise ValueError("В эту задачу файлы загружаются без указания типа")
+                if JOBS[job_id]["status"] != "uploading" or kind in files:
                     raise ValueError("Файл уже загружен или задача запущена. Создайте новую загрузку.")
                 marker = DATA / job_id / f"{kind}.part"
                 # Exclusive creation prevents two concurrent writes to the same upload.
@@ -235,10 +306,10 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Загрузка прервана. Создайте новую загрузку.")
                     stream.write(chunk)
                     remaining -= len(chunk)
-            marker.replace(DATA / job_id / f"{kind}.csv")
+            marker.replace(DATA / job_id / f"{kind}{ext}")
             with LOCK:
                 files = dict(JOBS[job_id]["files"])
-                files[kind] = {"name": filename[:240], "bytes": size}
+                files[kind] = {"name": filename[:240], "bytes": size, "ext": ext}
                 update_job(job_id, files=files)
             self.reply(200, {"ok": True})
         except (ValueError, OSError) as exc:
