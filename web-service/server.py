@@ -16,6 +16,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from inputs import prepare_sources
+from exports import export_lot
+from okpd_coverage import coverage
 from pipeline import run_pipeline
 from integrations import recommender, enricher, analysis
 
@@ -199,18 +201,62 @@ class Handler(BaseHTTPRequestHandler):
             path = test_set if test_set.exists() else ROOT / "examples" / ("notices.csv" if notices else "items.csv")
             self.serve_file(path, "text/csv; charset=utf-8", path.name)
         else:
-            match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/download|/lots)?", route)
+            match = re.fullmatch(r"/api/jobs/([0-9a-f]{32})(/download|/lots|/coverage)?", route)
             if not match or match[1] not in JOBS:
                 self.reply(404, {"error": "Задача не найдена"})
                 return
             with LOCK:
                 job = dict(JOBS[match[1]])
-            if match[2] == "/lots":
+            if match[2] == "/coverage":
+                query = parse_qs(urlparse(self.path).query)
+                lot_id = query.get('lot_id', [''])[0]
+                inn = query.get('inn', [''])[0]
+                if job['status'] != 'completed':
+                    self.reply(409, {'error': 'Подбор ещё не завершён'})
+                elif not lot_id or not re.fullmatch(r'\d{10}|\d{12}', inn):
+                    self.reply(400, {'error': 'Укажите лот и ИНН поставщика'})
+                else:
+                    try:
+                        self.reply(200, coverage(DATA / match[1], lot_id, inn, job['mode']))
+                    except LookupError as error:
+                        self.reply(404, {'error': str(error)})
+                    except Exception:
+                        logging.exception('Не удалось сопоставить коды ОКПД2')
+                        self.reply(503, {'error': 'Профиль ОКПД2 временно недоступен'})
+            elif match[2] == "/lots":
                 self.reply_lots(job, parse_qs(urlparse(self.path).query))
             elif match[2]:
                 if job["status"] != "completed":
                     self.reply(409, {"error": "Файл ещё не готов"})
                 else:
+                    query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if "lot_id" in query:
+                        lot_id = query["lot_id"][0]
+                        file_format = query.get("format", ["csv"])[0]
+                        if not lot_id or file_format not in ("csv", "xlsx"):
+                            self.reply(400, {"error": "Укажите лот и формат csv или xlsx"})
+                            return
+                        try:
+                            payload, content_type = export_lot(DATA / match[1], lot_id, file_format)
+                        except LookupError as error:
+                            self.reply(404, {"error": str(error)})
+                            return
+                        except ValueError as error:
+                            self.reply(400, {"error": str(error)})
+                            return
+                        from urllib.parse import quote
+                        label = re.sub(r'[^\w.-]', '_', lot_id)[:80]
+                        demo = "_ДЕМО" if job["mode"] == "demo" else ""
+                        filename = f"Поставщики_лот_{label}{demo}.{file_format}"
+                        self.send_response(200)
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Content-Length", str(len(payload)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("X-Content-Type-Options", "nosniff")
+                        self.send_header("Content-Disposition", f"attachment; filename=suppliers.{file_format}; filename*=UTF-8''{quote(filename)}")
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        return
                     self.serve_file(DATA / match[1] / "suppliers.csv", "text/csv; charset=utf-8", "Поставщики_ДЕМО.csv" if job["mode"] == "demo" else "Поставщики.csv")
             else:
                 self.reply(200, job)
@@ -222,6 +268,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(403, {"error": "Недопустимый источник запроса"})
                 return
             route = urlparse(self.path).path
+            if route == "/api/suppliers/roles":
+                payload = self.body_json(max_size=16384)
+                inns = payload.get('inns') if isinstance(payload, dict) else None
+                if not isinstance(inns, list) or not 1 <= len(inns) <= 50 or any(not isinstance(inn, str) or not re.fullmatch(r'\d{10}|\d{12}', inn) for inn in inns):
+                    raise ValueError('Передайте от 1 до 50 корректных ИНН')
+                if not enricher.READY:
+                    self.reply(503, {'error': 'Сервис обогащения не подключён'})
+                    return
+                try:
+                    cards = enricher._request('POST', '/api/suppliers/batch', {'inns': list(dict.fromkeys(inns)), 'offline': True})
+                    roles = {card['inn']: card['role']['label'] for card in cards.get('items', [])
+                             if card.get('role', {}).get('value') not in (None, 'unknown') and card['role'].get('label')}
+                    self.reply(200, {'roles': roles})
+                except enricher.EnrichmentError as error:
+                    self.reply(503, {'error': str(error)})
+                return
             if route == "/api/recommendations":
                 # Одна закупка из формы → топ поставщиков модели со скором, причинами и признаками
                 payload = self.body_json(max_size=2 * 1024 * 1024)

@@ -1,4 +1,8 @@
 import json
+import csv
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 import tempfile
 import threading
 import time
@@ -99,6 +103,47 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result['stats']['lots'],2)
         self.assertEqual(result['detected']['items'],'ТРУ.xlsx, лист «Лист1»')
 
+    def test_per_lot_exports_use_full_result_and_preserve_identifiers(self):
+        job = self.create()
+        folder = server.DATA / job
+        lot_id = '00042 / лот & 7'
+        fields = ['lot_id', 'supplier_inn', 'supplier_kpp', 'supplier_name', 'is_new']
+        selected = [dict(zip(fields, [lot_id, '0123456789', '001234567', "'=1+1", 'False'])),
+                    dict(zip(fields, [lot_id, '012345678901', '', 'Компания; «А»\nБ', 'True']))]
+        with (folder / 'suppliers.csv').open('w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.DictWriter(f, fields, delimiter=';')
+            writer.writeheader()
+            writer.writerows([dict(zip(fields, ['other', '9999999999', '', 'Другая', 'False']))] * 120)
+            writer.writerows(selected)
+        (folder / 'lots.jsonl').write_text(json.dumps({'lot_id': 'empty'}) + '\n', encoding='utf-8')
+        server.JOBS[job].update(status='completed', preview=[])
+        base = f'/api/jobs/{job}/download'
+        code, raw = self.call(base + '?lot_id=' + quote(lot_id) + '&format=csv')
+        self.assertEqual(code, 200)
+        self.assertTrue(raw.startswith(b'\xef\xbb\xbf'))
+        self.assertEqual(list(csv.DictReader(io.StringIO(raw.decode('utf-8-sig')), delimiter=';')), selected)
+        with urlopen(self.base + base + '?lot_id=' + quote(lot_id) + '&format=xlsx') as response:
+            self.assertIn('spreadsheetml.sheet', response.headers['Content-Type'])
+            self.assertIn('filename=suppliers.xlsx', response.headers['Content-Disposition'])
+            self.assertIn('%D0%BB%D0%BE%D1%82', response.headers['Content-Disposition'])
+            with zipfile.ZipFile(io.BytesIO(response.read())) as archive:
+                root = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+        ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        rows = [[c.find('m:is/m:t', ns).text or '' for c in row] for row in root.findall('m:sheetData/m:row', ns)]
+        self.assertEqual(rows, [fields] + [[r[k] for k in fields] for r in selected])
+        self.assertFalse(root.findall('.//m:f', ns))
+        self.assertEqual(self.call(base + '?lot_id=unknown')[0], 404)
+        self.assertEqual(self.call(base + '?lot_id=&format=csv')[0], 400)
+        self.assertEqual(self.call(base + '?lot_id=empty&format=pdf')[0], 400)
+        code, raw = self.call(base + '?lot_id=empty&format=csv')
+        self.assertEqual(code, 200)
+        self.assertEqual(list(csv.reader(io.StringIO(raw.decode('utf-8-sig')), delimiter=';')), [fields])
+        self.assertEqual(self.call(base + '?lot_id=empty&format=xlsx')[0], 200)
+        self.assertEqual(self.call(base)[1], (folder / 'suppliers.csv').read_bytes())
+        server.JOBS[job]['status'] = 'processing'
+        self.assertEqual(self.call(base + '?lot_id=empty&format=xlsx')[0], 409)
+        server.JOBS[job]['status'] = 'completed'
+
     def test_auto_upload_reports_missing_table(self):
         job=self.create()
         notices=(server.ROOT/'examples'/'notices.csv').read_bytes()
@@ -124,6 +169,18 @@ class ApiTests(unittest.TestCase):
 
     def test_start_requires_both_files(self):
         self.assertEqual(self.call(f'/api/jobs/{self.create()}/start','POST',b'')[0],409)
+
+    def test_roles_load_offline_and_ignore_unknown(self):
+        response = {'items': [{'inn': '0123456789', 'role': {'value': 'manufacturer', 'label': 'Производитель'}},
+                              {'inn': '1234567890', 'role': {'value': 'unknown', 'label': 'Не определена'}},
+                              {'inn': '9999999999', 'error': 'Нет данных'}]}
+        with patch.object(server.enricher, 'READY', True), patch.object(server.enricher, '_request', return_value=response) as fetch:
+            code, raw = self.call('/api/suppliers/roles', 'POST', json.dumps({'inns': ['0123456789', '1234567890']}).encode())
+            self.assertEqual(code, 200)
+            self.assertEqual(json.loads(raw), {'roles': {'0123456789': 'Производитель'}})
+            self.assertTrue(fetch.call_args.args[2]['offline'])
+            for inns in ([], ['wrong'], ['0123456789'] * 51):
+                self.assertEqual(self.call('/api/suppliers/roles', 'POST', json.dumps({'inns': inns}).encode())[0], 400)
 
     def test_recommendations_route_preserved_with_large_payload(self):
         payload = {'subject': 'Поставка бумаги', 'items': [{'name': 'Бумага ' * 3000}], 'top_k': 10}

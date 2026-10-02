@@ -45,13 +45,8 @@ const hasName = c => c.supplier_name && c.supplier_name !== c.supplier_inn;
 const displayName = c => hasName(c) ? c.supplier_name : 'ИНН ' + c.supplier_inn;
 // После обогащения название может так и не найтись: ЕГРЮЛ и «Прозрачный бизнес» не ответили
 const noNameNote = c => /^обогащено/i.test(c.enrichment_status || '') ? 'Название не найдено в открытых источниках' : 'Название появится после обогащения';
-// Модель кладёт вероятность победы первой причиной: «Вероятность победы по модели: 30%»
-const WIN_RE = /^Вероятность победы по модели:\s*([\d.,]+)\s*%/;
-const winChance = c => (c.reasons || []).map(r => WIN_RE.exec(r)).find(Boolean)?.[1] ?? null;
-const pWin = c => c.explanation?.p_win ?? (winChance(c) != null ? Number(winChance(c).replace(',', '.')) / 100 : null);
-const fmtChance = p => p < 0.01 ? 'меньше 1%' : Math.round(p * 100) + '%';
-const FIT_RE = /^Соответствие лоту:/;
-const mainReason = c => (c.reasons || []).find(r => !WIN_RE.test(r) && !FIT_RE.test(r)) || '—';
+const visibleReasons = c => (c.reasons || []).filter(r => !/(?:вероятность|шанс).*побед/i.test(r)).map(r => r.replace(/Соответствие/g, 'Оценка').replace(/соответствие/g, 'оценка'));
+const mainReason = c => visibleReasons(c).find(r => !/^(?:Соответствие|Оценка) лоту:/.test(r)) || '—';
 // «Соответствие» 0–100 (score модели): оценка выше, чем у стольких процентов реальных победителей похожих закупок.
 // В отличие от шанса победы не делится между ~300 кандидатами лота
 const hasFit = c => c.explanation?.fit != null;
@@ -278,7 +273,7 @@ async function poll() {
 
 /* ---------- Результат ---------- */
 const GROUP_CAPTION = {
-  verified: 'Компании с историей закупок, ранжированные моделью. Соответствие 0–100 — насколько компания похожа на реальных победителей таких закупок; нажмите на компанию, чтобы увидеть, почему она на этом месте.',
+  verified: 'Компании с историей закупок, ранжированные моделью. Оценка 0–100 — насколько компания похожа на реальных победителей таких закупок; нажмите на компанию, чтобы увидеть, почему она на этом месте.',
   unverified: 'Новые компании из открытых реестров по кодам ОКПД2 лота. Моделью не оценивались — нужна ручная проверка.',
 };
 
@@ -354,7 +349,7 @@ function renderLots() {
   $('lots-more').hidden = !state.hasMore;
 }
 
-const qualityTitle = q => `Качество подбора ${q.value} из 100: соответствие лучших компаний ${q.strength}, данные из открытых источников по ${q.data}% компаний. Лоты идут от лучших к худшим.`;
+const qualityTitle = q => `Качество подбора ${q.value} из 100: оценка лучших компаний ${q.strength}, данные из открытых источников по ${q.data}% компаний. Лоты идут от лучших к худшим.`;
 
 function selectLot(lotId) {
   state.lotId = lotId;
@@ -387,7 +382,16 @@ function renderLotDetail() {
   if (lot.quality) meta.push(['Качество подбора', `${lot.quality.value} из 100`]);
 
   const children = [
-    h('span', {class: 'lot-chip', text: 'Лот ' + lot.lot_id}),
+    h('div', {class: 'lot-toolbar'},
+      h('span', {class: 'lot-chip', text: 'Лот ' + lot.lot_id}),
+      h('div', {class: 'lot-downloads', role: 'group', 'aria-label': `Скачать поставщиков лота ${lot.lot_id}`},
+        h('span', {class: 'lot-download-label', text: 'Скачать лот'}),
+        ['csv', 'xlsx'].map(format => h('a', {
+          class: 'btn btn-soft', text: format.toUpperCase(), download: '',
+          href: `/api/jobs/${state.jobId}/download?${new URLSearchParams({lot_id: lot.lot_id, format})}`,
+          'aria-label': `Скачать поставщиков лота ${lot.lot_id} в ${format.toUpperCase()}`,
+          title: 'Все поставщики этого лота: проверенные и непроверенные',
+        })))),
     h('h2', {text: lot.subject}),
     meta.length ? h('dl', {class: 'lot-meta'}, meta.map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v})))) : null,
   ];
@@ -408,32 +412,52 @@ function renderLotDetail() {
       ? emptyState('Модель не нашла поставщиков с историей', 'Посмотрите вкладку «Непроверенные» — там компании из открытых реестров.')
       : emptyState('Новых компаний не найдено', state.job?.mode === 'demo' ? 'В демо-режиме для этого лота новые компании не добавлены.' : 'Поиск в открытых реестрах не подключён или не дал результатов по кодам ОКПД2 лота.'));
   } else {
-    const showRole = rows.some(r => r.role && !UNKNOWN_ROLE.test(r.role));
     section.append(h('div', {class: 'sup-head', 'aria-hidden': 'true'},
-      h('span', {text: '№'}), h('span', {text: 'Поставщик'}), h('span', {text: showRole ? 'Роль' : 'Главная причина'}),
-      verified ? [h('span', {text: rows.some(hasFit) ? 'Соответствие' : 'Шанс победы'}), h('span', {text: 'Статус'})] : h('span', {text: 'Почему найден'}), h('span')));
-    section.append(h('div', {class: 'sup-list', role: 'list'}, rows.map(c => h('div', {role: 'listitem'}, supplierRow(c, lot, showRole)))));
+      h('span', {text: '№'}), h('span', {text: 'Поставщик'}), h('span', {text: 'Главная причина'}),
+      ...(verified ? [h('span', {text: 'Оценка'})] : []), h('span', {text: 'Роль'}), h('span')));
+    section.append(h('div', {class: 'sup-list', role: 'list'}, rows.map(c => h('div', {role: 'listitem'}, supplierRow(c, lot)))));
+    loadRoles(rows);
   }
   children.push(section);
   box.replaceChildren(...children);
 }
 
-function supplierRow(c, lot, showRole) {
+const roleCache = new Map();
+const rolePending = new Set();
+const roleLabel = c => roleCache.get(c.supplier_inn) || c.role || 'Не определена';
+function applyRole(inn, label) {
+  if (!label || UNKNOWN_ROLE.test(label)) return;
+  roleCache.set(inn, label);
+  for (const lot of state.lots) for (const group of ['verified', 'unverified']) {
+    for (const c of lot[group]) if (c.supplier_inn === inn) c.role = label;
+  }
+  for (const el of document.querySelectorAll('[data-role-inn]')) {
+    if (el.dataset.roleInn === inn) el.textContent = label;
+  }
+}
+async function loadRoles(rows) {
+  const inns = [...new Set(rows.map(c => c.supplier_inn).filter(inn => /^\d{10}(\d{2})?$/.test(inn) && !roleCache.has(inn) && !rolePending.has(inn)))];
+  if (!inns.length) return;
+  inns.forEach(inn => rolePending.add(inn));
+  try {
+    const data = await api('/api/suppliers/roles', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({inns})});
+    for (const [inn, label] of Object.entries(data.roles || {})) applyRole(inn, label);
+  } catch { /* Сохраняем роли из результата; недоступные остаются «Не определена». */ }
+  finally { inns.forEach(inn => rolePending.delete(inn)); }
+}
+
+function supplierRow(c, lot) {
   const verified = state.group === 'verified';
-  const p = pWin(c);
-  const best = Math.max(...lot[state.group].map(x => pWin(x) || 0));
-  const fit = hasFit(c);
-  const pct = fit ? Math.max(2, Math.round(c.score)) : p != null && best > 0 ? Math.max(2, Math.round(100 * p / best)) : Math.max(2, Math.min(100, c.score));
+  const pct = Math.max(2, Math.min(100, c.score));
   return h('button', {class: 'sup-row', type: 'button', 'aria-haspopup': 'dialog', onclick: e => openSheet(c, lot, e.currentTarget)},
     h('span', {class: 'rank' + (verified && c.rank <= 3 ? ' rank-' + c.rank : ''), text: String(c.rank)}),
     h('span', {class: 'sup-name'}, h('strong', {text: displayName(c)}),
       h('span', {text: hasName(c) ? (c.supplier_inn ? 'ИНН ' + c.supplier_inn : 'ИНН не указан') : noNameNote(c)})),
-    showRole ? h('span', {class: 'sup-cell role', text: c.role || '—'}) : h('span', {class: 'sup-cell reason-cell', text: mainReason(c)}),
-    verified
-      ? [h('span', {class: 'score', 'data-tone': fit ? fitTone(c.score) : null}, h('b', {text: fit ? fmtFit(c.score) : p != null ? fmtChance(p) : fmtScore(c.score)}), h('span', {class: 'meter', 'aria-hidden': 'true'}, h('span', {style: `width:${pct}%`})),
-           c.explanation?.of ? h('small', {text: `место ${c.explanation.place} из ${fmt(c.explanation.of)}`}) : null),
-         h('span', {class: 'chip', 'data-tone': statusTone(c.status), text: c.status})]
-      : h('span', {class: 'sup-cell sup-reason', text: c.reasons?.[0] || 'Причина не указана'}),
+    h('span', {class: 'sup-cell reason-cell', text: mainReason(c)}),
+    verified ? h('span', {class: 'score', 'data-tone': hasFit(c) ? fitTone(c.score) : null},
+      h('b', {text: hasFit(c) ? fmtFit(c.score) : fmtScore(c.score)}), h('span', {class: 'meter', 'aria-hidden': 'true'}, h('span', {style: `width:${pct}%`})),
+      c.explanation?.of ? h('small', {text: `место ${c.explanation.place} из ${fmt(c.explanation.of)}`}) : null) : null,
+    h('span', {class: 'sup-cell role', 'data-role-inn': c.supplier_inn, text: roleLabel(c)}),
     icon('chev'));
 }
 
@@ -524,8 +548,8 @@ function explainSection(c, lot) {
   const i = list.indexOf(c);
   const parts = [h('h3', {text: c.rank === 1 ? 'Почему на первом месте' : `Почему на ${c.rank}-м месте`}),
     h('p', {class: 'score-explain', text: e.fit != null
-      ? `Соответствие ${fmtFit(e.fit)} из 100: оценка модели выше, чем у ${fmtFit(e.fit)}% реальных победителей похожих закупок. Шанс именно этой победы — ${fmtChance(e.p_win)}: он делится между всеми ${fmt(e.of)} кандидатами лота, поэтому у сильных, но не первых компаний он мал. Оценка складывается из вкладов признаков ниже.`
-      : `Модель сравнила ${fmt(e.of)} ${plural(e.of, 'кандидата', 'кандидатов', 'кандидатов')} с историей закупок по этому лоту. Шанс победы ${fmtChance(e.p_win)} рассчитан из их оценок, а оценка складывается из вкладов признаков ниже.`})];
+      ? `Оценка ${fmtFit(e.fit)} из 100: оценка модели выше, чем у ${fmtFit(e.fit)}% реальных победителей похожих закупок. Оценка складывается из вкладов признаков ниже.`
+      : `Модель сравнила ${fmt(e.of)} ${plural(e.of, 'кандидата', 'кандидатов', 'кандидатов')} с историей закупок по этому лоту. Оценка складывается из вкладов признаков ниже.`})];
   const other = c.rank === 1 ? list[i + 1] : list[i - 1];
   if (other?.explanation?.factors) parts.push(contrast(c, other, c.rank === 1));
   const top = e.factors.filter(f => Math.abs(f.phi) >= MIN_PHI).sort((a, b) => Math.abs(b.phi) - Math.abs(a.phi)).slice(0, 7);
@@ -546,7 +570,7 @@ function contrast(c, other, ahead) {
   const diffs = c.explanation.factors.filter(f => theirs[f.feature]).map(f => ({f, o: theirs[f.feature], d: f.phi - theirs[f.feature].phi}));
   const side = diffs.filter(x => ahead ? x.d >= MIN_PHI : x.d <= -MIN_PHI).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
   const sum = side.reduce((acc, x) => acc + Math.abs(x.d), 0);
-  const who = `№${other.rank} — ${displayName(other)}, ` + (hasFit(other) ? `соответствие ${fmtFit(other.score)}` : `шанс ${fmtChance(pWin(other))}`);
+  const who = `№${other.rank} — ${displayName(other)}, ` + `оценка ${hasFit(other) ? fmtFit(other.score) : fmtScore(other.score)}`;
   if (!side.length) return h('p', {class: 'note', text: `${ahead ? 'Опережает' : 'Уступает'} ${who} по совокупности мелких различий.`});
   return h('div', {class: 'contrast'},
     h('p', {class: 'contrast-head'}, h('strong', {text: ahead ? 'Опережает ' : 'Уступает '}), who, ahead ? ' — прежде всего за счёт:' : ' — прежде всего из-за:'),
@@ -575,18 +599,45 @@ function sheetIds(c) {
   return ids;
 }
 
+async function loadOkpdCoverage(c, lot, box) {
+  const count = h('span', {class: 'okpd-count', text: '…'});
+  const content = h('div', {}, h('p', {class: 'muted', text: 'Сверяем коды лота с профилем поставщика…'}));
+  box.append(h('h3', {class: 'okpd-heading'}, 'ОКПД2', count), content);
+  if (!c.supplier_inn) {
+    count.textContent = 'Нет данных';
+    content.replaceChildren(h('p', {class: 'muted', text: 'Для поставщика без ИНН сравнение недоступно.'}));
+    return;
+  }
+  try {
+    const data = await api(`/api/jobs/${state.jobId}/coverage?${new URLSearchParams({lot_id: lot.lot_id, inn: c.supplier_inn})}`);
+    if (!box.isConnected) return;
+    count.textContent = data.available ? `${data.matched} из ${data.total}` : `— из ${data.total}`;
+    content.replaceChildren(
+      h('ul', {class: 'okpd-list'}, data.items.map(item => h('li', {'data-state': item.present === null ? 'unknown' : item.present ? 'present' : 'absent'},
+        h('span', {class: 'okpd-code', text: item.code}),
+        h('span', {text: item.present === null ? 'Нет данных' : item.present ? 'Есть в профиле' : 'Нет в профиле'})))),
+      h('p', {class: 'okpd-note', text: !data.total ? 'В позициях лота коды ОКПД2 не указаны.' : data.available
+        ? 'Точное совпадение по истории закупок модели. Отсутствие кода в профиле не означает, что поставщик не может поставить товар.'
+        : 'В модели нет истории кодов этого поставщика — подтвердить наличие или отсутствие нельзя.'}));
+  } catch {
+    if (!box.isConnected) return;
+    count.textContent = 'Нет данных';
+    content.replaceChildren(h('p', {class: 'muted', text: 'Не удалось загрузить коды поставщика. '}),
+      h('button', {class: 'link-btn', type: 'button', text: 'Повторить', onclick: () => { box.replaceChildren(); loadOkpdCoverage(c, lot, box); }}));
+  }
+}
+
 function openSheet(c, lot, trigger) {
   state.lastFocus = trigger || document.activeElement;
   const verified = !c.is_new;
   $('sheet-context').textContent = verified ? `${c.rank}-е место по лоту ${lot.lot_id}` : `Новая компания для лота ${lot.lot_id}`;
   $('sheet-title').textContent = displayName(c);
   $('sheet-ids').replaceChildren(...sheetIds(c));
-  const p = pWin(c);
   $('sheet-score').replaceChildren(!verified ? h('div', {class: 'unscored', text: 'Моделью не оценён'})
-    : hasFit(c) ? ring(c.score, 'соответствие', fmtFit(c.score), `Соответствие ${fmtFit(c.score)} из 100`)
-    : p != null ? ring(p * 100, 'шанс победы', fmtChance(p), `Шанс победы ${fmtChance(p)}`) : ring(c.score));
+    : ring(c.score, 'оценка', hasFit(c) ? fmtFit(c.score) : fmtScore(c.score)));
 
-  const sections = [];
+  const okpdBox = h('section', {class: 'sheet-section okpd-coverage', 'aria-live': 'polite'});
+  const sections = [okpdBox];
   if (verified && c.explanation?.factors?.length) {
     sections.push(explainSection(c, lot));
   } else if (verified) {
@@ -601,11 +652,11 @@ function openSheet(c, lot, trigger) {
 
   const smp = c.is_smp === null || c.is_smp === undefined ? 'Нет данных' : c.is_smp ? 'Да' : 'Нет';
   sections.push(h('section', {class: 'sheet-section'}, h('h3', {text: 'Характеристики'}),
-    h('dl', {class: 'props'}, [...(winChance(c) && !c.explanation?.factors ? [['Вероятность победы', winChance(c) + '%']] : []), ['Роль', c.role], ['Регион', c.region || 'Не указан'], ['Субъект МСП', smp], ['Обогащение', c.enrichment_status]]
-      .map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v || '—'}))))));
+    h('dl', {class: 'props'}, [['Роль', roleLabel(c)], ['Статус', c.status], ['Регион', c.region || 'Не указан'], ['Субъект МСП', smp], ['Обогащение', c.enrichment_status]]
+      .map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v || '—', ...(k === 'Роль' ? {'data-role-inn': c.supplier_inn} : {})}))))));
 
   sections.push(h('section', {class: 'sheet-section'}, h('h3', {text: 'Почему в списке'}),
-    c.reasons?.length ? h('ul', {class: 'reasons'}, c.reasons.map(r => h('li', {}, h('span', {class: 'tick'}, icon('check')), h('span', {text: r}))))
+    visibleReasons(c).length ? h('ul', {class: 'reasons'}, visibleReasons(c).map(r => h('li', {}, h('span', {class: 'tick'}, icon('check')), h('span', {text: r}))))
       : h('p', {class: 'muted', text: 'Объяснение не передано.'})));
 
   const companyBox = h('div', {class: 'company', id: 'company-box', 'aria-busy': 'true'});
@@ -627,6 +678,7 @@ function openSheet(c, lot, trigger) {
   $('sheet-backdrop').hidden = false;
   document.body.style.overflow = 'hidden';
   $('sheet-close').focus();
+  loadOkpdCoverage(c, lot, okpdBox);
   loadCompany(c, companyBox);
 }
 
@@ -674,6 +726,7 @@ async function loadCompany(c, box) {
 
 function renderCompany(c, card, box) {
   const co = card.company || {};
+  if (card.role?.value !== 'unknown') applyRole(c.supplier_inn, card.role?.label);
   const name = co.name_short || co.name_full;
   // Модель отдаёт ИНН вместо названия — подставляем найденное в кандидата: шапку карточки и строку в списке
   if (name && !hasName(c)) {

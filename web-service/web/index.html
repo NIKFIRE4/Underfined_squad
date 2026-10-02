@@ -149,11 +149,13 @@
       <div class="alert alert-warning" id="warnings" hidden></div>
 
       <div class="toolbar">
+        <div class="group-controls">
         <div class="segmented" role="tablist" aria-label="Список поставщиков" id="segmented">
           <button role="tab" type="button" id="tab-verified" data-group="verified" aria-selected="true" aria-controls="workspace">Проверенные <span class="count" id="count-verified">0</span></button>
           <button role="tab" type="button" id="tab-unverified" data-group="unverified" aria-selected="false" aria-controls="workspace" tabindex="-1">Непроверенные <span class="count" id="count-unverified">0</span></button>
         </div>
         <p class="group-caption" id="group-caption"></p>
+        </div>
         <label class="search">
           <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg>
           <span class="sr-only">Поиск</span>
