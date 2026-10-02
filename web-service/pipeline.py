@@ -67,6 +67,25 @@ EXCEL_NOTES = {"bool": "логические значения ИСТИНА/ЛО�
                "date": "даты ДД.ММ.ГГГГ приведены к ГГГГ-ММ-ДД"}
 
 
+# служебные слова предмета закупки — не различают, о чём закупка
+GENERIC = {"работ", "услуг", "выпол", "оказа", "поста", "прове", "товар", "нужда", "нужды", "закуп", "компл", "объек", "госуд", "учреж"}
+
+
+def pick_subject(lot) -> bool:
+    """subject и procedure_name расходятся (так было в файле предзащиты: «ТО противодымной защиты» против
+    «капитального ремонта») — для подбора берём то, что совпадает по словам с позициями ТРУ лота."""
+    subject, name = lot.notice.get("subject", ""), lot.notice.get("procedure_name", "")
+    words = lambda t: okpd_check.stems(t) - GENERIC  # noqa: E731
+    a, b = words(subject), words(name)
+    if not a or not b or len(a & b) / min(len(a), len(b)) > 0.5:
+        return False
+    items = set().union(*(words(i.get("product_name", "")) for i in lot.items)) if lot.items else set()
+    if len(b & items) <= len(a & items):
+        return False
+    lot.notice["subject_original"], lot.notice["subject"] = subject, name
+    return True
+
+
 def read_csv(path: Path, kind: str):
     import codecs
     sample = path.read_bytes() if path.stat().st_size < 65536 else None
@@ -192,6 +211,7 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
     formats = {}
     okpd_fixes, okpd_unknown, okpd_errors, names_filled, kept_as_is = [], 0, [], 0, 0
     excel_found: set[str] = set()
+    subject_switched: list[str] = []
     # выбор пользователя в окне проверки ОКПД2 и наименований (server.py, /check → /start)
     choice_path = folder / "okpd2_choice.json"
     okpd_choice = json.loads(choice_path.read_text(encoding="utf-8")) if choice_path.exists() else {}
@@ -277,6 +297,8 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             cursor = db.execute("SELECT n.lot_id,n.data FROM notices n WHERE EXISTS (SELECT 1 FROM items i WHERE i.lot_id=n.lot_id) ORDER BY n.rowid")
             for index, (lot_id, data) in enumerate(cursor, 1):
                 lot = Lot(lot_id, json.loads(data), [json.loads(r[0]) for r in db.execute("SELECT data FROM items WHERE lot_id=?", (lot_id,))])
+                if pick_subject(lot):
+                    subject_switched.append(lot_id)
                 if stats["lots"] <= 500 or index == 1 or index % 50 == 0:  # мелкие наборы — прогресс по каждому лоту
                     update(stage="recommendation", progress=45+int(49*(index-1)/stats["lots"]), message=f'Подбираем поставщиков: лот {index} из {stats["lots"]}', stats=dict(stats))
                 candidates = demo_recommend(lot, top_k) if mode == "demo" else recommender.recommend(lot, top_k)
@@ -299,6 +321,7 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
                 if not groups["verified"] and not groups["unverified"]:
                     stats["without_candidates"] += 1
                 card = {"lot_id": lot_id, "subject": lot.notice["subject"], "start_price": lot.notice.get("start_price", ""),
+                        **({"subject_original": lot.notice["subject_original"]} if lot.notice.get("subject_original") else {}),
                         "is_smp": lot.notice.get("is_smp", ""), "items_total": len(lot.items),
                         "items": [{"name": i.get("product_name", ""), "okpd2": i.get("okpd2_code", ""),
                                    **({"okpd2_original": i["okpd2_original"], "okpd2_fix_reason": i.get("okpd2_fix_reason", "")}
@@ -331,6 +354,11 @@ def run_pipeline(folder: Path, mode: str, top_k: int, update):
             warnings.append(f'Не удалось обогатить лотов: {stats["enrichment_errors"]}. Данные источников не подтверждены.')
         if stats["without_candidates"]:
             warnings.append(f'Для {stats["without_candidates"]} лотов кандидаты не найдены.')
+        if subject_switched:
+            warnings.append(f"Лоты {', '.join(subject_switched[:5])}{' и др.' if len(subject_switched) > 5 else ''}: предмет закупки (subject) "
+                            f"не совпадает с наименованием процедуры (procedure_name) — для подбора взято наименование процедуры, "
+                            f"оно совпадает с позициями ТРУ. Исходный предмет показан в лоте.")
+            update(warnings=warnings)
         update(stage="export", progress=97, message="Сохраняем файл «Поставщики»…")
         (folder / "result.part").replace(folder / "suppliers.csv")
         sort_lots(folder / "lots.part", folder / "lots.jsonl", lot_keys)

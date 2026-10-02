@@ -641,6 +641,7 @@ function renderLotDetail() {
           title: 'Все поставщики этого лота: проверенные и непроверенные',
         })))),
     h('h2', {text: lot.subject}),
+    lot.subject_original ? h('p', {class: 'check-mismatch', text: `Предмет закупки в файле: «${lot.subject_original}» — не совпадает с наименованием процедуры и позициями ТРУ; подбор шёл по наименованию процедуры.`}) : null,
     meta.length ? h('dl', {class: 'lot-meta'}, meta.map(([k, v]) => h('div', {}, h('dt', {text: k}), h('dd', {text: v})))) : null,
   ];
 
