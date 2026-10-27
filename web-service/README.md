@@ -137,6 +137,8 @@ data/<job_id>/          входные файлы, SQLite, статус и ре�
 
 ## Проверки
 
+Набор pytest для регрессии CSV-парсера и экспорта: [сценарии и запуск](tests/CSV_EXPORT_TESTS.md).
+
 ```powershell
 py -3 -m unittest discover -s tests -v
 node --test tests/file-selection.test.cjs
